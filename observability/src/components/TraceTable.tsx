@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import type { LangfuseTrace } from '../lib/langfuse'
 import './TraceTable.css'
 
@@ -7,6 +8,8 @@ interface TraceTableProps {
   selectedTraceId?: string | null
   loadingTraceId?: string | null
 }
+
+const PAGE_SIZE = 10
 
 function formatTimestamp(timestamp: string): string {
   try {
@@ -34,6 +37,28 @@ export default function TraceTable({
   selectedTraceId,
   loadingTraceId,
 }: TraceTableProps) {
+  const [page, setPage] = useState(0)
+
+  const { pageTraces, totalPages, currentPage, from, to } = useMemo(() => {
+    const total = traces.length
+    const size = PAGE_SIZE
+    const pages = Math.max(1, Math.ceil(total / size))
+    const clampedPage = Math.min(page, pages - 1)
+    const start = clampedPage * size
+    const end = Math.min(start + size, total)
+
+    return {
+      pageTraces: traces.slice(start, end),
+      totalPages: pages,
+      currentPage: clampedPage,
+      from: total === 0 ? 0 : start + 1,
+      to: end,
+    }
+  }, [traces, page])
+
+  const canPrevious = currentPage > 0
+  const canNext = currentPage < totalPages - 1
+
   return (
     <div className="trace-table-wrapper">
       <table className="trace-table">
@@ -50,7 +75,7 @@ export default function TraceTable({
           </tr>
         </thead>
         <tbody>
-          {traces.map((trace) => {
+          {pageTraces.map((trace) => {
             const isSelected = trace.id === selectedTraceId
             const isLoading = loadingTraceId === trace.id
 
@@ -96,6 +121,31 @@ export default function TraceTable({
           })}
         </tbody>
       </table>
+      {totalPages > 1 ? (
+        <div className="trace-table-pagination">
+          <button
+            type="button"
+            className="pagination-button"
+            onClick={() => canPrevious && setPage((p) => Math.max(0, p - 1))}
+            disabled={!canPrevious}
+            aria-label="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            Page {currentPage + 1} of {totalPages} • Showing {from}-{to}
+          </span>
+          <button
+            type="button"
+            className="pagination-button"
+            onClick={() => canNext && setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={!canNext}
+            aria-label="Next page"
+          >
+            ›
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

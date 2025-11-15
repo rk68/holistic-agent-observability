@@ -259,10 +259,13 @@ def run_banking_sql(query: str) -> str:
     if "limit" not in normalized.lower():
         normalized = f"{normalized} LIMIT 100"
 
-    with sqlite3.connect(_BANKING_DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(normalized)
-        rows = cursor.fetchmany(100)
+    try:
+        with sqlite3.connect(_BANKING_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(normalized)
+            rows = cursor.fetchmany(100)
+    except sqlite3.OperationalError as exc:
+        return f"SQL execution error: {exc}"
 
     if not rows:
         return "Query returned no rows."

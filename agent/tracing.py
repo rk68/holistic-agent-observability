@@ -1,10 +1,37 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable, Optional, TypeVar
 
-from langfuse import Langfuse, observe
-from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+from langfuse import Langfuse
+
+try:  # Prefer modern Langfuse layout
+    from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover - compatibility shim
+    try:
+        # Some versions may expose integrations under a different namespace
+        from langfuse.integrations.langchain import (  # type: ignore[no-redef]
+            CallbackHandler as LangfuseCallbackHandler,
+        )
+    except Exception:
+        LangfuseCallbackHandler = None  # type: ignore[assignment]
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+try:  # Prefer Langfuse v3+ layout
+    from langfuse.decorators import observe  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover - compatibility shim
+    try:
+        # Older SDKs may expose observe at the top level
+        from langfuse import observe  # type: ignore[no-redef]
+    except Exception:  # Fallback: no-op decorator so tracing never blocks app startup
+
+        def observe(*_args: Any, **_kwargs: Any):  # type: ignore[no-redef]
+            def _decorator(func: F) -> F:
+                return func
+
+            return _decorator
 
 from .config import AgentSettings, load_settings
 
@@ -26,12 +53,16 @@ def _configure_tracer(settings: AgentSettings) -> Langfuse:
 
 @contextmanager
 def _langfuse_context(settings: AgentSettings):
-    if not settings.enable_tracing:
+    if not settings.enable_tracing or LangfuseCallbackHandler is None:
         yield None
         return
 
     client = _configure_tracer(settings)
-    handler = LangfuseCallbackHandler(public_key=settings.langfuse_public_key)
+    handler: Optional[Any] = None
+    try:
+        handler = LangfuseCallbackHandler(public_key=settings.langfuse_public_key)
+    except Exception:  # pragma: no cover - if handler cannot be constructed, skip tracing
+        handler = None
     try:
         yield handler
     finally:

@@ -47,6 +47,8 @@ class AgentSettings:
     """Runtime configuration for the ReAct agent."""
 
     model: str
+    # Primary backend for the chat model: e.g. "ollama" (default) or "aws" / "aws_bedrock".
+    agent_backend: str
     temperature: float
     instructions: str
     agent_name: str
@@ -57,6 +59,11 @@ class AgentSettings:
     langfuse_public_key: str | None
     langfuse_secret_key: str | None
     ollama_base_url: str
+    # Optional AWS Bedrock-style gateway configuration
+    aws_bedrock_api_endpoint: str | None
+    aws_bedrock_api_key: str | None
+    aws_bedrock_team_id: str | None
+    aws_agent_model: str | None
 
 
 @lru_cache(maxsize=1)
@@ -66,8 +73,23 @@ def load_settings() -> AgentSettings:
     _ensure_env_loaded()
 
     instructions = os.getenv("AGENT_INSTRUCTIONS", _DEFAULT_PROMPT)
+
+    # Decide backend: explicit AGENT_BACKEND wins; otherwise infer from AWS
+    # configuration so that setting AWS_BEDROCK_API_ENDPOINT automatically
+    # opts into the AWS gateway when AGENT_BACKEND is unset.
+    backend = os.getenv("AGENT_BACKEND")
+    if backend:
+        agent_backend = backend
+    elif os.getenv("AWS_BEDROCK_API_ENDPOINT"):
+        # If a custom Bedrock-style gateway endpoint is configured but no
+        # explicit backend is set, default to the gateway wrapper instead of
+        # the native Bedrock integration.
+        agent_backend = "aws_gateway"
+    else:
+        agent_backend = "ollama"
     return AgentSettings(
         model=os.getenv("AGENT_MODEL", _DEFAULT_MODEL),
+        agent_backend=agent_backend,
         temperature=_get_float("AGENT_TEMPERATURE", 0.2),
         instructions=instructions,
         agent_name=os.getenv("AGENT_NAME", "glass-react-agent"),
@@ -78,4 +100,8 @@ def load_settings() -> AgentSettings:
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_BASE_URL),
+        aws_bedrock_api_endpoint=os.getenv("AWS_BEDROCK_API_ENDPOINT"),
+        aws_bedrock_api_key=os.getenv("AWS_BEDROCK_API_KEY"),
+        aws_bedrock_team_id=os.getenv("AWS_BEDROCK_TEAM_ID"),
+        aws_agent_model=os.getenv("AWS_AGENT_MODEL"),
     )
