@@ -366,24 +366,222 @@ function App() {
     ]
 
     const observationMap = new Map(traceDetail.observations.map((observation) => [observation.id, observation]))
-    const depthCache = new Map<string, number>()
+    const resolvedParentById = new Map<string, string | null>()
 
-    const getDepth = (parentId: string | null): number => {
-      if (!parentId) {
-        return 1
+    const metadataParentKeys = [
+      'parentObservationId',
+      'parent_observation_id',
+      'parent_run_id',
+      'parentRunId',
+      'trigger_observation_id',
+      'triggerObservationId',
+      'root_observation_id',
+      'rootObservationId',
+    ] as const
+
+    const extractMetadataParentId = (observation: LangfuseObservation): string | null => {
+      const metadata = observation.metadata ?? {}
+      for (const key of metadataParentKeys) {
+        const value = (metadata as Record<string, unknown>)[key]
+        if (typeof value === 'string' && value) {
+          return value
+        }
       }
-      const cached = depthCache.get(parentId)
+      return null
+    }
+
+    const isToolsSpan = (observation: LangfuseObservation | undefined): boolean => {
+      if (!observation) {
+        return false
+      }
+      if (observation.type !== 'SPAN' && observation.type !== 'AGENT') {
+        return false
+      }
+
+      const name = (observation.name ?? '').toLowerCase()
+      if (name.includes('tool')) {
+        return true
+      }
+
+      const metadata = observation.metadata ?? {}
+      const node =
+        typeof (metadata as { langgraph_node?: unknown }).langgraph_node === 'string'
+          ? ((metadata as { langgraph_node?: string }).langgraph_node ?? '').toLowerCase()
+          : ''
+
+      return node === 'tools' || node === 'tool'
+    }
+
+    const extractToolCallNamesFromOutput = (observation: LangfuseObservation): string[] => {
+      const names = new Set<string>()
+      const visit = (value: unknown): void => {
+        if (!value) {
+          return
+        }
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            visit(item)
+          }
+          return
+        }
+        if (typeof value === 'object') {
+          const record = value as Record<string, unknown>
+
+          if (Array.isArray(record.tool_calls)) {
+            for (const call of record.tool_calls) {
+              if (call && typeof call === 'object' && 'name' in call) {
+                const name = (call as { name?: unknown }).name
+                if (typeof name === 'string' && name) {
+                  names.add(name)
+                }
+              }
+            }
+          }
+
+          for (const nested of Object.values(record)) {
+            visit(nested)
+          }
+        }
+      }
+
+      visit(observation.output)
+      return Array.from(names)
+    }
+
+    const generationToolNamesById = new Map<string, string[]>()
+    orderedObservations.forEach((observation) => {
+      if (observation.type === 'GENERATION') {
+        generationToolNamesById.set(observation.id, extractToolCallNamesFromOutput(observation))
+      }
+    })
+
+    const resolveParentId = (observation: LangfuseObservation, index: number): string | null => {
+      const directParent = observation.parentObservationId
+      const metadataParent = extractMetadataParentId(observation)
+      const directParentObs = directParent ? observationMap.get(directParent) : undefined
+      const metadataParentObs = metadataParent ? observationMap.get(metadataParent) : undefined
+
+      if (observation.type === 'TOOL') {
+        const toolName = observation.name
+
+        // 0. If a tools span directly wraps this tool, keep that structure.
+        if (directParent && directParentObs && isToolsSpan(directParentObs)) {
+          return directParent
+        }
+        if (metadataParent && metadataParentObs && isToolsSpan(metadataParentObs)) {
+          return metadataParent
+        }
+
+        // 1. Prefer the GENERATION whose output contains a matching tool_call name.
+        if (toolName) {
+          for (let pointer = index - 1; pointer >= 0; pointer -= 1) {
+            const candidate = orderedObservations[pointer]
+            if (candidate.type !== 'GENERATION') {
+              continue
+            }
+            const toolNames = generationToolNamesById.get(candidate.id)
+            if (toolNames && toolNames.includes(toolName)) {
+              return candidate.id
+            }
+          }
+        }
+
+        // 2. If direct/metadata parent is a GENERATION, keep that.
+        if (directParent && directParentObs && directParentObs.type === 'GENERATION') {
+          return directParent
+        }
+
+        if (metadataParent && metadataParentObs && metadataParentObs.type === 'GENERATION') {
+          return metadataParent
+        }
+
+        // 3. Otherwise, prefer the nearest preceding GENERATION step as the branch anchor.
+        for (let pointer = index - 1; pointer >= 0; pointer -= 1) {
+          const candidate = orderedObservations[pointer]
+          if (candidate.type === 'GENERATION') {
+            return candidate.id
+          }
+        }
+
+        // 4. Finally, attach to the nearest preceding non-TOOL step.
+        for (let pointer = index - 1; pointer >= 0; pointer -= 1) {
+          const candidate = orderedObservations[pointer]
+          if (candidate.type !== 'TOOL') {
+            return candidate.id
+          }
+        }
+      }
+
+      if (isToolsSpan(observation)) {
+        // Try to hang this tools span under the generation that produced the tools.
+        let toolNameFromChild: string | null = null
+        for (let pointer = index + 1; pointer < orderedObservations.length; pointer += 1) {
+          const candidate = orderedObservations[pointer]
+          if (candidate.parentObservationId !== observation.id) {
+            continue
+          }
+          if (candidate.type === 'TOOL' && candidate.name) {
+            toolNameFromChild = candidate.name
+            break
+          }
+        }
+
+        if (toolNameFromChild) {
+          for (let pointer = index - 1; pointer >= 0; pointer -= 1) {
+            const candidate = orderedObservations[pointer]
+            if (candidate.type !== 'GENERATION') {
+              continue
+            }
+            const toolNames = generationToolNamesById.get(candidate.id)
+            if (toolNames && toolNames.includes(toolNameFromChild)) {
+              return candidate.id
+            }
+          }
+        }
+      }
+
+      // Non-TOOL observations (and tools spans that we couldn't re-anchor) keep the
+      // physical parent relationships when present.
+      if (directParent && (directParent === traceDetail.id || observationMap.has(directParent))) {
+        return directParent
+      }
+
+      if (metadataParent && (metadataParent === traceDetail.id || observationMap.has(metadataParent))) {
+        return metadataParent
+      }
+
+      if (index > 0) {
+        return orderedObservations[index - 1]?.id ?? traceDetail.id
+      }
+
+      return traceDetail.id
+    }
+
+    orderedObservations.forEach((observation, index) => {
+      const resolvedParent = resolveParentId(observation, index)
+      resolvedParentById.set(observation.id, resolvedParent)
+    })
+
+    const depthCache = new Map<string, number>()
+    const computeDepth = (nodeId: string): number => {
+      const cached = depthCache.get(nodeId)
       if (cached !== undefined) {
         return cached
       }
-      const parent = observationMap.get(parentId)
-      const depth = parent ? getDepth(parent.parentObservationId) + 1 : 1
-      depthCache.set(parentId, depth)
+
+      const parentId = resolvedParentById.get(nodeId)
+      if (!parentId || parentId === traceDetail.id) {
+        depthCache.set(nodeId, 1)
+        return 1
+      }
+
+      const depth = computeDepth(parentId) + 1
+      depthCache.set(nodeId, depth)
       return depth
     }
 
     orderedObservations.forEach((observation, index) => {
-      const depth = getDepth(observation.parentObservationId)
+      const depth = computeDepth(observation.id)
       const isSelected = selectedObservation ? observation.id === selectedObservation.id : index === 0
 
       nodes.push({
@@ -413,7 +611,7 @@ function App() {
     })
 
     const edges: GraphEdge[] = orderedObservations.map((observation) => {
-      const source = observation.parentObservationId ?? traceDetail.id
+      const source = resolvedParentById.get(observation.id) ?? traceDetail.id
       return {
         id: `${source}→${observation.id}`,
         source,
