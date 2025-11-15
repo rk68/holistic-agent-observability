@@ -1,0 +1,120 @@
+{
+  "customer": {
+    "customer_id": "cust-10493",
+    "name": "Jordan Ellis",
+    "risk_tolerance": "moderate",
+    "annual_income": 92000,
+    "monthly_discretionary_budget": 1400,
+    "goals": [
+      {
+        "goal_id": "goal-travel-2025",
+        "name": "Six-month Europe trip",
+        "target_amount": 4500,
+        "target_date": "2026-04-01"
+      },
+      {
+        "goal_id": "goal-emergency",
+        "name": "Emergency fund",
+        "target_amount": 15000,
+        "target_date": "2026-12-31"
+      }
+    ]
+  },
+  "accounts": [
+    {
+      "account_id": "acct-chk-001",
+      "type": "checking",
+      "display_name": "Everyday Checking",
+      "balance": 2380.52,
+      "currency": "USD"
+    },
+    {
+      "account_id": "acct-sav-001",
+      "type": "savings",
+      "display_name": "High-Yield Savings",
+      "balance": 8200.0,
+      "currency": "USD"
+    },
+    {
+      "account_id": "acct-cc-001",
+      "type": "credit",
+      "display_name": "Rewards Plus Credit Card",
+      "remaining_balance": 1240.35,
+      "credit_limit": 7500,
+      "currency": "USD"
+    }
+  ],
+  "transactions": [
+    {
+      "transaction_id": "txn-0001",
+      "account_id": "acct-chk-001",
+      "timestamp": "2025-11-10T14:33:00Z",
+      "amount": -325.0,
+      "category": "housing",
+      "description": "Rent payment"
+    },
+    {
+      "transaction_id": "txn-0002",
+      "account_id": "acct-chk-001",
+      "timestamp": "2025-11-12T09:22:00Z",
+      "amount": -68.4,
+      "category": "groceries",
+      "description": "Fresh Market"
+    },
+    {
+      "transaction_id": "txn-0003",
+      "account_id": "acct-chk-001",
+      "timestamp": "2025-11-13T18:11:00Z",
+      "amount": -285.75,
+      "category": "travel",
+      "description": "Flight deposit"
+    },
+    {
+      "transaction_id": "txn-0004",
+      "account_id": "acct-chk-001",
+      "timestamp": "2025-11-14T12:01:00Z",
+      "amount": -24.99,
+      "category": "entertainment",
+      "description": "Music subscription"
+    },
+    {
+      "transaction_id": "txn-0005",
+      "account_id": "acct-sav-001",
+      "timestamp": "2025-11-01T08:00:00Z",
+      "amount": 500.0,
+      "category": "transfer",
+      "description": "Monthly auto-transfer from checking"
+    }
+  ],
+  "products": [
+    {
+      "product_id": "prod-travel-card",
+      "name": "Skybound Travel Rewards Card",
+      "type": "credit_card",
+      "annual_fee": 95,
+      "apr_percent": 19.99,
+      "rewards_summary": "3x points on travel, 2x on dining",
+      "ideal_for": ["travel", "credit"],
+      "min_income": 55000,
+      "score": 0.89
+    },
+    {
+      "product_id": "prod-cd-12m",
+      "name": "12-Month Growth CD",
+      "type": "deposit",
+      "apy_percent": 4.1,
+      "minimum_deposit": 2000,
+      "ideal_for": ["savings"],
+      "score": 0.72
+    },
+    {
+      "product_id": "prod-travel-savings",
+      "name": "Travel Booster Savings Plan",
+      "type": "savings_program",
+      "apy_percent": 3.2,
+      "recommended_contribution": 600,
+      "ideal_for": ["travel", "savings"],
+      "score": 0.81
+    }
+  ]
+}

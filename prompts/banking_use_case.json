@@ -1,0 +1,65 @@
+{
+  "scenario_name": "everyday_banking_assistant",
+  "description": "Assist a retail banking customer with account inquiries, transaction reviews, and personalized product recommendations based on their financial profile.",
+  "customer_profile": {
+    "customer_id": "cust-10493",
+    "name": "Jordan Ellis",
+    "segments": ["checking", "savings", "credit"],
+    "risk_tolerance": "moderate",
+    "goals": ["build emergency fund", "earn travel rewards"]
+  },
+  "sample_tasks": [
+    {
+      "id": "acct-balance-check",
+      "user_query": "What's the balance in my Everyday Checking account and were there any large transactions last week?",
+      "expected_steps": [
+        "Lookup the checking account balance",
+        "Filter recent transactions for the past 7 days",
+        "Highlight any debits above $250"
+      ]
+    },
+    {
+      "id": "travel-fund-guidance",
+      "user_query": "I'm planning a trip in six months. Can you help me figure out how much to set aside and recommend a rewards card?",
+      "expected_steps": [
+        "Review customer savings balances",
+        "Estimate monthly savings needed to hit the travel goal",
+        "Recommend a credit product aligned with travel rewards"
+      ]
+    },
+    {
+      "id": "credit-utilization-review",
+      "user_query": "How much do I currently owe on my Rewards Plus Credit Card and what's my utilization?",
+      "expected_steps": [
+        "Fetch the credit card account balance and limit",
+        "Explain utilization percentage and flag if above 30%",
+        "Suggest payoff guidance based on current budget"
+      ]
+    },
+    {
+      "id": "category-spend-sql",
+      "user_query": "Can you break down my checking account spending by category for the past two weeks?",
+      "expected_steps": [
+        "Run a SQL aggregation over the transactions table",
+        "Return category totals and highlight highest spend",
+        "Summarize any actionable insights"
+      ]
+    },
+    {
+      "id": "goal-progress-report",
+      "user_query": "Give me a progress report on my emergency fund and travel goals.",
+      "expected_steps": [
+        "Retrieve goal targets and timelines",
+        "Compare balances against targets to compute completion %",
+        "Recommend monthly contribution adjustments if needed"
+      ]
+    }
+  ],
+  "tooling_expectations": [
+    "Query account balances across checking, savings, and credit products",
+    "Retrieve and summarize recent transactions",
+    "Score and suggest banking products based on customer profile",
+    "Perform lightweight planning math (monthly contributions, payoff timelines)",
+    "Execute read-only SQL analytics against the banking warehouse (e.g. category spending, transaction counts)"
+  ]
+}

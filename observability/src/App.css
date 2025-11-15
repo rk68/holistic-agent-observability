@@ -1,0 +1,364 @@
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  padding: 2.25rem 2.75rem;
+  width: min(1320px, 100%);
+  margin: 0 auto;
+}
+
+.app-header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.app-header p {
+  margin: 0;
+  color: #475569;
+  font-size: 1rem;
+  max-width: 720px;
+}
+
+.app-main {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.app-card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 1.75rem 2rem;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+  border: 1px solid #e2e8f0;
+}
+
+.traces-panel {
+  flex: 1 1 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-height: 74vh;
+}
+
+.panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.trace-table-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.25rem;
+  background: #f8fafc;
+}
+
+.graph-panel {
+  flex: 1 1 0;
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.graph-header h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.6rem;
+  color: #0f172a;
+}
+
+.graph-header p {
+  margin: 0;
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+.graph-content {
+  display: flex;
+  gap: 1.5rem;
+  align-items: stretch;
+}
+
+.graph-container {
+  flex: 1 1 60%;
+  min-height: 420px;
+  height: 70vh;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #dbeafe;
+  background: #f4f8ff;
+}
+
+.observation-detail {
+  flex: 0 0 320px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 1.25rem;
+  overflow: auto;
+  max-height: 520px;
+}
+
+.observation-detail__content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.observation-detail__header h3 {
+  margin: 0.2rem 0;
+  font-size: 1.1rem;
+  color: #0f172a;
+}
+
+.observation-detail__header p {
+  margin: 0;
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+.observation-step {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.observation-highlight {
+  border-left: 4px solid #1d4ed8;
+  padding-left: 0.85rem;
+}
+
+.observation-highlight h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  color: #1d4ed8;
+}
+
+.observation-highlight p {
+  margin: 0;
+  color: #1f2937;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.observation-meta {
+  display: grid;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.observation-meta dt {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.observation-meta dd {
+  margin: 0.1rem 0 0;
+  color: #475569;
+}
+
+.observation-payloads {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.observation-payloads details {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.6rem 0.9rem;
+}
+
+.observation-payloads summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.observation-payloads pre {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  background: #0f172a;
+  color: #f8fafc;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.observation-detail__empty {
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+.primary-button {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #ffffff;
+  padding: 0.7rem 1.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #1e40af;
+  transform: translateY(-1px);
+}
+
+.primary-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.status-badge {
+  padding: 0.45rem 0.95rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background-color: #e2e8f0;
+  color: #1e293b;
+}
+
+.status-connecting {
+  background-color: #dbeafe;
+  color: #1d4ed8;
+}
+
+.status-connected {
+  background-color: #dcfce7;
+  color: #047857;
+}
+
+.status-error {
+  background-color: #fee2e2;
+  color: #b91c1c;
+}
+
+.empty-state {
+  text-align: left;
+  padding: 0.75rem 0;
+  color: #334155;
+}
+
+.empty-state h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.4rem;
+  color: #0f172a;
+}
+
+.empty-state p {
+  margin: 0;
+  max-width: 600px;
+}
+
+.graph-empty-state {
+  border: 1px dashed #cbd5f5;
+  border-radius: 10px;
+  padding: 1.25rem;
+  text-align: center;
+  color: #475569;
+  background: #f8fafc;
+}
+
+.error-banner {
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  background-color: #fee2e2;
+  color: #991b1b;
+  margin-bottom: 1rem;
+}
+
+.info-banner {
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  background-color: #e0f2fe;
+  color: #1d4ed8;
+}
+
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 8px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  border: 1px solid #cbd5f5;
+  background: #f8fafc;
+  color: #1e40af;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.secondary-button:hover {
+  border-color: #94a3b8;
+  background: #e2e8f0;
+}
+
+.app-footer {
+  margin-top: auto;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.app-footer code {
+  background-color: #e2e8f0;
+  color: #0f172a;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+@media (max-width: 768px) {
+  .app-shell {
+    padding: 1.5rem;
+  }
+
+  .app-main {
+    flex-direction: column;
+  }
+
+  .traces-panel,
+  .graph-panel {
+    max-height: none;
+  }
+
+  .graph-content {
+    flex-direction: column;
+  }
+
+  .graph-container {
+    min-height: 320px;
+  }
+
+  .observation-detail {
+    max-height: none;
+  }
+}

@@ -1,0 +1,71 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Node / frontend artifacts
+node_modules/
+observability/node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+/dist/
+/build/
+coverage/
+*.tsbuildinfo
+observability/dist/
+
+# Environment & secrets
+.env
+.env.*
+observability/.env
+observability/.env.*
+*.env.local
+
+# Vite / React artifacts
+*.local
+.idea/
+.vscode/
+
+# Python cache & virtualenvs
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+*.manifest
+*.spec
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# SQLite databases & temp data
+*.db
+*.sqlite3
+*.sqlite
+*.db-journal
+
+# Cache
+.cache/
+pytest_cache/
+docs/_build/
+
+# Generated data exports
+*.csv
+*.tsv
+*.parquet
+
+# Misc
+Thumbs.db
+*.swp
+*.swo
