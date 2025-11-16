@@ -2100,50 +2100,54 @@ function App() {
 
       <section className="app-card graph-card">
           <div className="graph-header">
-            <div>
+            <div className="graph-header__title">
               <h2>{selectedTrace ? selectedTrace.name || 'Trace flow' : 'Trace flow'}</h2>
               <p>{graphSubtitle}</p>
             </div>
-            {selectedTrace ? (
-              <div className="graph-header-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={handleProcessTrace}
-                  disabled={
-                    detailStatus !== 'loaded' ||
-                    orderedObservations.length === 0 ||
-                    narrativeStatus === 'processing'
-                  }
-                >
-                  {narrativeStatus === 'idle'
-                    ? 'Process trace'
-                    : narrativeStatus === 'processing'
-                    ? 'Processing…'
-                    : 'Reprocess trace'}
-                </button>
-                {storedSummary ? (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={handleLoadStoredSummary}
-                    disabled={narrativeStatus === 'processing'}
-                  >
-                    Load cached summary
-                  </button>
+            {(storedSummaryTimestamp || selectedTrace) ? (
+              <div className="graph-header__meta">
+                {storedSummaryTimestamp ? (
+                  <div className="stored-summary-chip">Cached {storedSummaryTimestamp}</div>
                 ) : null}
-                <a
-                  className="secondary-button"
-                  href={selectedTrace.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open in Langfuse
-                </a>
+                {selectedTrace ? (
+                  <div className="graph-header-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={handleProcessTrace}
+                      disabled={
+                        detailStatus !== 'loaded' ||
+                        orderedObservations.length === 0 ||
+                        narrativeStatus === 'processing'
+                      }
+                    >
+                      {narrativeStatus === 'idle'
+                        ? 'Process trace'
+                        : narrativeStatus === 'processing'
+                        ? 'Processing…'
+                        : 'Reprocess trace'}
+                    </button>
+                    {storedSummary ? (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={handleLoadStoredSummary}
+                        disabled={narrativeStatus === 'processing'}
+                      >
+                        Load cached summary
+                      </button>
+                    ) : null}
+                    <a
+                      className="secondary-button"
+                      href={selectedTrace.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in Langfuse
+                    </a>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            {storedSummaryTimestamp ? (
-              <div className="stored-summary-chip">Cached {storedSummaryTimestamp}</div>
             ) : null}
           </div>
 
@@ -2251,7 +2255,7 @@ function App() {
                     <div className="graph-metric-card__header">
                       <span className="graph-metric-card__label">About this metric</span>
                     </div>
-                    <details className="graph-metric-explainer">
+                    <details className="graph-metric-explainer" open>
                       <summary>How groundedness is labeled</summary>
                       <ul className="metric-guidelines">
                         <li>Premise = user question + up to 6 recent tool summaries.</li>
