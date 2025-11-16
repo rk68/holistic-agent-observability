@@ -33,6 +33,24 @@ type ExecutionNarrative = {
   finalAnswer: string | null
 }
 
+function formatMgSig(kg: number | null | undefined, sig = 3): string {
+  const mg = (Number(kg) || 0) * 1_000_000
+  const abs = Math.abs(mg)
+  if (!isFinite(mg) || abs === 0) {
+    return '0'
+  }
+  try {
+    const fmt = new Intl.NumberFormat(undefined, {
+      maximumSignificantDigits: sig,
+      minimumSignificantDigits: 1,
+    })
+    return fmt.format(mg)
+  } catch {
+    // Fallback if Intl fails in some envs
+    return Number(mg).toPrecision(sig)
+  }
+}
+
 type ReasoningSummary = {
   goal: string | null
   plan: string[]
@@ -812,6 +830,14 @@ function App() {
     setStoredSummary(stored)
     if (stored) {
       applyStoredSummary(stored)
+    } else {
+      // Clear previous trace's metrics so panels don't show stale data
+      setReasoningSummary(null)
+      setObservationInsights([])
+      setObservationMetrics([])
+      setRootCauseObservationId(null)
+      setCarbonSummary(null)
+      setNarrativeStatus('idle')
     }
   }, [selectedTraceId, applyStoredSummary])
 
@@ -2201,164 +2227,164 @@ function App() {
 
           {detailStatus === 'loaded' && orderedObservations.length > 0 ? (
             <>
-              {observationMetrics.length > 0 ? (
-                <div className="graph-metrics">
-                  <div className="graph-metric-card graph-metric-card--counts">
+              <div className="graph-metrics">
+                <div className="graph-metric-card graph-metric-card--counts">
+                  <div className="graph-metric-card__header">
+                    <span className="graph-metric-card__label">Groundedness overview</span>
+                    <span className="graph-metric-card__stat">
+                      {observationMetrics.length} sample{observationMetrics.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <ul className="metric-distribution">
+                    {metricDistribution.map((entry) => (
+                      <li key={entry.key} className="metric-distribution__item">
+                        <div className="metric-distribution__label">
+                          <span className={`metric-dot metric-dot--${entry.key}`} aria-hidden />
+                          <div>
+                            <strong>{entry.label}</strong>
+                            <span>{entry.count} steps</span>
+                          </div>
+                        </div>
+                        <div className="metric-distribution__bar" aria-hidden>
+                          <div
+                            className={`metric-distribution__fill metric-distribution__fill--${entry.key}`}
+                            style={{ width: `${entry.percent}%` }}
+                          />
+                        </div>
+                        <span className="metric-distribution__percent">{entry.percent}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {carbonSummary ? (
+                  <div className="graph-metric-card graph-metric-card--carbon">
                     <div className="graph-metric-card__header">
-                      <span className="graph-metric-card__label">Groundedness overview</span>
-                      <span className="graph-metric-card__stat">
-                        {observationMetrics.length} sample{observationMetrics.length === 1 ? '' : 's'}
-                      </span>
+                      <span className="graph-metric-card__label">Sustainability impact</span>
+                      <span className="graph-metric-card__stat">{formatMgSig(carbonSummary.total_kg)} mg CO₂e</span>
                     </div>
                     <ul className="metric-distribution">
-                      {metricDistribution.map((entry) => (
-                        <li key={entry.key} className="metric-distribution__item">
-                          <div className="metric-distribution__label">
-                            <span className={`metric-dot metric-dot--${entry.key}`} aria-hidden />
-                            <div>
-                              <strong>{entry.label}</strong>
-                              <span>{entry.count} steps</span>
-                            </div>
+                      <li className="metric-distribution__item">
+                        <div className="metric-distribution__label">
+                          <span className="metric-dot metric-dot--grounded" aria-hidden />
+                          <div>
+                            <strong>Reasoning</strong>
+                            <span>{formatMgSig(carbonSummary.breakdown.reasoning.kg)} mg CO₂e</span>
                           </div>
-                          <div className="metric-distribution__bar" aria-hidden>
-                            <div
-                              className={`metric-distribution__fill metric-distribution__fill--${entry.key}`}
-                              style={{ width: `${entry.percent}%` }}
+                        </div>
+                        <div className="metric-distribution__bar" aria-hidden>
+                          <div
+                            className="metric-distribution__fill metric-distribution__fill--grounded"
+                            style={{
+                              width: `${Math.min(100, Math.max(0, Math.round(
+                                (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                              )))}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="metric-distribution__percent">
+                          {Math.min(100, Math.max(0, Math.round(
+                            (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                          )))}%
+                        </span>
+                      </li>
+                      <li className="metric-distribution__item">
+                        <div className="metric-distribution__label">
+                          <span className="metric-dot metric-dot--neutral" aria-hidden />
+                          <div>
+                            <strong>Rest</strong>
+                            <span>{formatMgSig(carbonSummary.breakdown.rest.kg)} mg CO₂e</span>
+                          </div>
+                        </div>
+                        <div className="metric-distribution__bar" aria-hidden>
+                          <div
+                            className="metric-distribution__fill metric-distribution__fill--neutral"
+                            style={{
+                              width: `${Math.min(100, Math.max(0, Math.round(
+                                (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                              )))}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="metric-distribution__percent">
+                          {Math.min(100, Math.max(0, Math.round(
+                            (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                          )))}%
+                        </span>
+                      </li>
+                    </ul>
+                    <div className="graph-metric-card__foot">source: {carbonSummary.source || 'CodeCarbon'}</div>
+                  </div>
+                ) : (
+                  <div className="graph-metric-card graph-metric-card--carbon">
+                    <div className="graph-metric-card__header">
+                      <span className="graph-metric-card__label">Sustainability impact</span>
+                      <span className="graph-metric-card__stat">—</span>
+                    </div>
+                    <p className="graph-metric-empty">Process this trace to generate sustainability metrics.</p>
+                  </div>
+                )}
+                <div className="graph-metric-card graph-metric-card--raw">
+                  <div className="graph-metric-card__header">
+                    <span className="graph-metric-card__label">Recent scores</span>
+                    <span className="graph-metric-card__stat">Sampled snapshots</span>
+                  </div>
+                  {rawMetricSamples.length > 0 ? (
+                    <ul className="graph-metric-raw-list">
+                      {rawMetricSamples.map((item) => (
+                        <li key={item.key} className="graph-metric-raw">
+                          <div className="graph-metric-raw__title">
+                            <strong>{item.title}</strong>
+                            <span>{Math.round(item.entailment * 100)}% grounded</span>
+                          </div>
+                          <div className="graph-metric-raw__stack" aria-hidden>
+                            <span
+                              className="graph-metric-raw__segment graph-metric-raw__segment--contradiction"
+                              style={{ width: `${Math.max(0, Math.round(item.contradiction * 100))}%` }}
+                            />
+                            <span
+                              className="graph-metric-raw__segment graph-metric-raw__segment--neutral"
+                              style={{ width: `${Math.max(0, Math.round(item.neutral * 100))}%` }}
+                            />
+                            <span
+                              className="graph-metric-raw__segment graph-metric-raw__segment--grounded"
+                              style={{ width: `${Math.max(0, Math.round(item.entailment * 100))}%` }}
                             />
                           </div>
-                          <span className="metric-distribution__percent">{entry.percent}%</span>
+                          <div className="graph-metric-raw__legend">
+                            <span className="legend-chip legend-chip--grounded">
+                              <span className="legend-dot legend-dot--grounded" />
+                              {Math.round(item.entailment * 100)}% grounded
+                            </span>
+                            <span className="legend-chip legend-chip--neutral">
+                              <span className="legend-dot legend-dot--neutral" />
+                              {Math.round(item.neutral * 100)}% neutral
+                            </span>
+                            <span className="legend-chip legend-chip--contradiction">
+                              <span className="legend-dot legend-dot--contradiction" />
+                              {Math.round(item.contradiction * 100)}% contradicted
+                            </span>
+                          </div>
                         </li>
                       ))}
                     </ul>
-                  </div>
-                  {carbonSummary ? (
-                    <div className="graph-metric-card graph-metric-card--carbon">
-                      <div className="graph-metric-card__header">
-                        <span className="graph-metric-card__label">Sustainability impact</span>
-                        <span className="graph-metric-card__stat">
-                          {Math.round((carbonSummary.total_kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
-                        </span>
-                      </div>
-                      <ul className="metric-distribution">
-                        <li className="metric-distribution__item">
-                          <div className="metric-distribution__label">
-                            <span className="metric-dot metric-dot--grounded" aria-hidden />
-                            <div>
-                              <strong>Reasoning</strong>
-                              <span>
-                                {Math.round((carbonSummary.breakdown.reasoning.kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
-                              </span>
-                            </div>
-                          </div>
-                          <div className="metric-distribution__bar" aria-hidden>
-                            <div
-                              className="metric-distribution__fill metric-distribution__fill--grounded"
-                              style={{
-                                width: `${Math.min(100, Math.max(0, Math.round(
-                                  (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
-                                )))}%`,
-                              }}
-                            />
-                          </div>
-                          <span className="metric-distribution__percent">
-                            {Math.min(100, Math.max(0, Math.round(
-                              (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
-                            )))}%
-                          </span>
-                        </li>
-                        <li className="metric-distribution__item">
-                          <div className="metric-distribution__label">
-                            <span className="metric-dot metric-dot--neutral" aria-hidden />
-                            <div>
-                              <strong>Rest</strong>
-                              <span>
-                                {Math.round((carbonSummary.breakdown.rest.kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
-                              </span>
-                            </div>
-                          </div>
-                          <div className="metric-distribution__bar" aria-hidden>
-                            <div
-                              className="metric-distribution__fill metric-distribution__fill--neutral"
-                              style={{
-                                width: `${Math.min(100, Math.max(0, Math.round(
-                                  (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
-                                )))}%`,
-                              }}
-                            />
-                          </div>
-                          <span className="metric-distribution__percent">
-                            {Math.min(100, Math.max(0, Math.round(
-                              (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
-                            )))}%
-                          </span>
-                        </li>
-                      </ul>
-                      <div className="graph-metric-card__foot">source: {carbonSummary.source || 'CodeCarbon'}</div>
-                    </div>
-                  ) : null}
-                  <div className="graph-metric-card graph-metric-card--raw">
-                    <div className="graph-metric-card__header">
-                      <span className="graph-metric-card__label">Recent scores</span>
-                      <span className="graph-metric-card__stat">Sampled snapshots</span>
-                    </div>
-                    {rawMetricSamples.length > 0 ? (
-                      <ul className="graph-metric-raw-list">
-                        {rawMetricSamples.map((item) => (
-                          <li key={item.key} className="graph-metric-raw">
-                            <div className="graph-metric-raw__title">
-                              <strong>{item.title}</strong>
-                              <span>{Math.round(item.entailment * 100)}% grounded</span>
-                            </div>
-                            <div className="graph-metric-raw__stack" aria-hidden>
-                              <span
-                                className="graph-metric-raw__segment graph-metric-raw__segment--contradiction"
-                                style={{ width: `${Math.max(0, Math.round(item.contradiction * 100))}%` }}
-                              />
-                              <span
-                                className="graph-metric-raw__segment graph-metric-raw__segment--neutral"
-                                style={{ width: `${Math.max(0, Math.round(item.neutral * 100))}%` }}
-                              />
-                              <span
-                                className="graph-metric-raw__segment graph-metric-raw__segment--grounded"
-                                style={{ width: `${Math.max(0, Math.round(item.entailment * 100))}%` }}
-                              />
-                            </div>
-                            <div className="graph-metric-raw__legend">
-                              <span className="legend-chip legend-chip--grounded">
-                                <span className="legend-dot legend-dot--grounded" />
-                                {Math.round(item.entailment * 100)}% grounded
-                              </span>
-                              <span className="legend-chip legend-chip--neutral">
-                                <span className="legend-dot legend-dot--neutral" />
-                                {Math.round(item.neutral * 100)}% neutral
-                              </span>
-                              <span className="legend-chip legend-chip--contradiction">
-                                <span className="legend-dot legend-dot--contradiction" />
-                                {Math.round(item.contradiction * 100)}% contradicted
-                              </span>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="graph-metric-empty">Metrics will appear after processing a trace.</p>
-                    )}
-                  </div>
-                  <div className="graph-metric-card graph-metric-card--explainer">
-                    <div className="graph-metric-card__header">
-                      <span className="graph-metric-card__label">About this metric</span>
-                    </div>
-                    <details className="graph-metric-explainer" open>
-                      <summary>How groundedness is labeled</summary>
-                      <ul className="metric-guidelines">
-                        <li>Premise = user question + up to 6 recent tool summaries.</li>
-                        <li>Hypotheses = reasoning snippet and final answer for each agent/model step.</li>
-                        <li>Cross-encoder NLI buckets: contradiction ≥ 0.5, entailment ≥ 0.6, else neutral.</li>
-                      </ul>
-                    </details>
-                  </div>
+                  ) : (
+                    <p className="graph-metric-empty">Process this trace to see groundedness metrics here.</p>
+                  )}
                 </div>
-              ) : null}
+                <div className="graph-metric-card graph-metric-card--explainer">
+                  <div className="graph-metric-card__header">
+                    <span className="graph-metric-card__label">About this metric</span>
+                  </div>
+                  <details className="graph-metric-explainer" open>
+                    <summary>How groundedness is labeled</summary>
+                    <ul className="metric-guidelines">
+                      <li>Premise = user question + up to 6 recent tool summaries.</li>
+                      <li>Hypotheses = reasoning snippet and final answer for each agent/model step.</li>
+                      <li>Cross-encoder NLI buckets: contradiction ≥ 0.5, entailment ≥ 0.6, else neutral.</li>
+                    </ul>
+                  </details>
+                </div>
+              </div>
               <div className="graph-content">
               <div className="graph-container">
                 <ReactFlowProvider>

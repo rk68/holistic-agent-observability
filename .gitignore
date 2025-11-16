@@ -69,3 +69,6 @@ docs/_build/
 Thumbs.db
 *.swp
 *.swo
+
+tutorials/
+resources/

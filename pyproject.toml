@@ -25,5 +25,8 @@ dependencies = [
   "codecarbon>=3.1.0",
 ]
 
+[project.scripts]
+glass-agent = "agent.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["agent", "observability_backend"]
