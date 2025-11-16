@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, TypeVar
 
+from codecarbon import EmissionsTracker
 from langfuse import Langfuse
 
 try:  # Prefer modern Langfuse layout
@@ -34,6 +36,30 @@ except Exception:  # pragma: no cover - compatibility shim
             return _decorator
 
 from .config import AgentSettings, load_settings
+
+
+@dataclass
+class CarbonMetrics:
+    total_kg: float
+    duration_seconds: float
+
+
+@contextmanager
+def carbon_tracker(settings: AgentSettings):
+    tracker = EmissionsTracker(
+        project_name=settings.agent_name,
+        log_level="error",
+        output_dir=".carbon",
+        tracking_mode="process",
+    )
+    tracker.start()
+    start = time.perf_counter()
+    try:
+        yield tracker
+    finally:
+        total = tracker.stop() or 0.0
+        elapsed = time.perf_counter() - start
+        tracker.final_metrics = CarbonMetrics(total_kg=total, duration_seconds=elapsed)
 
 
 def _configure_tracer(settings: AgentSettings) -> Langfuse:

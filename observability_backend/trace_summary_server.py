@@ -5,6 +5,9 @@ import logging
 import time
 from collections import deque
 from typing import Any, Deque, Dict, Iterable, List, Tuple, Optional
+from pathlib import Path
+import glob
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -12,6 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from langchain_ollama import ChatOllama
+try:
+    from codecarbon import OfflineEmissionsTracker  # type: ignore
+except Exception:  # pragma: no cover - optional
+    OfflineEmissionsTracker = None  # type: ignore
 
 from agent.config import load_settings
 from .metrics import score_pairs
@@ -62,6 +69,7 @@ class TraceSummaryRequest(BaseModel):
     # Optional overrides to control which models are used for this request
     nli_model: Optional[str] = None
     llm_model: Optional[str] = None
+    skip_llm: Optional[bool] = False
 
 
 class TraceSummaryResponse(BaseModel):
@@ -73,6 +81,7 @@ class TraceSummaryResponse(BaseModel):
     observationInsights: List[ObservationInsight] = Field(default_factory=list)
     observationMetrics: List[ObservationMetric] = Field(default_factory=list)
     rootCauseObservationId: Optional[str] = None
+    carbonSummary: Optional[Dict[str, Any]] = None
 
 
 settings = load_settings()
@@ -123,6 +132,111 @@ def _first_user_message(observations: List[Dict[str, Any]]) -> Optional[str]:
                 if content:
                     return content
     return None
+
+
+def _compute_carbon_summary(
+    observations: List[Dict[str, Any]],
+    user_question: Optional[str],
+    request_label: str,
+    fallback_kg: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    sidecar = _load_carbon_sidecar(user_question)
+    if sidecar and sidecar.get("emissions_kg") is not None:
+        total_kg = float(sidecar.get("emissions_kg") or 0.0)
+        base_duration = float(sidecar.get("duration_seconds") or 0.0)
+    elif fallback_kg is not None:
+        logger.info("[TraceSummary %s] Using fallback CodeCarbon kg=%.6f from backend wrapper", request_label, fallback_kg)
+        total_kg = float(fallback_kg)
+        base_duration = 0.0
+        sidecar = {"duration_seconds": None}
+    else:
+        logger.info("[TraceSummary %s] No carbon data found (sidecar missing, no fallback)", request_label)
+        return None
+    total_obs_duration = 0.0
+    reasoning_duration = 0.0
+
+    for obs in observations:
+        start = obs.get("startTime")
+        end = obs.get("endTime")
+        dur = _duration_seconds(start, end)
+        total_obs_duration += dur
+
+        if _extract_reasoning_text(obs):
+            reasoning_duration += dur
+
+    non_reasoning_duration = max(0.0, total_obs_duration - reasoning_duration)
+    denom = max(0.001, total_obs_duration)
+    reasoning_share = reasoning_duration / denom
+    rest_share = 1.0 - reasoning_share
+
+    summary = {
+        "total_kg": total_kg,
+        "duration_seconds": float(base_duration or total_obs_duration),
+        "breakdown": {
+            "reasoning": {
+                "kg": round(total_kg * reasoning_share, 10),
+                "duration_s": reasoning_duration,
+            },
+            "rest": {
+                "kg": round(total_kg * rest_share, 10),
+                "duration_s": non_reasoning_duration,
+            },
+        },
+        "source": "codecarbon_sidecar",
+    }
+    logger.info(
+        "[TraceSummary %s] Carbon summary -> total_kg=%.6f reasoning_s=%.2f rest_s=%.2f",
+        request_label,
+        total_kg,
+        reasoning_duration,
+        non_reasoning_duration,
+    )
+    return summary
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        # Accept both '...Z' and offset formats
+        value = ts.rstrip("Z")
+        # fromisoformat handles 'YYYY-MM-DDTHH:MM:SS.mmm' optionally with offset
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _duration_seconds(start: Optional[str], end: Optional[str]) -> float:
+    s = _parse_iso(start)
+    e = _parse_iso(end)
+    if s and e and e >= s:
+        return (e - s).total_seconds() or 0.0
+    # Fallback minimal duration so percentages remain meaningful
+    return 0.5
+
+
+def _sha1(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _load_carbon_sidecar(question: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not question or not question.strip():
+        return None
+    qhash = _sha1(question.strip())
+    base = Path("data") / "carbon"
+    pattern = str(base / f"carbon_{qhash}_*.json")
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        logger.info("[Carbon] No sidecar match for hash; pattern=%s", pattern)
+        return None
+    try:
+        latest = matches[-1]
+        logger.info("[Carbon] Using sidecar file: %s", latest)
+        return json.loads(Path(latest).read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def _extract_reasoning_text(observation: Dict[str, Any]) -> Optional[str]:
@@ -473,7 +587,7 @@ def _call_llm(
     snippets: List[Dict[str, Any]],
     request_label: str,
     llm_model: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     payload = {
         "trace_name": trace_name,
         "user_question": narrative.userQuestion,
@@ -490,14 +604,35 @@ def _call_llm(
         len(snippets),
     )
     start = time.perf_counter()
+    tracker = None
+    fallback_kg: Optional[float] = None
     try:
-        # Use per-request model if specified
+        if OfflineEmissionsTracker is not None:
+            tracker = OfflineEmissionsTracker(
+                save_to_file=False,
+                tracking_mode="process",
+                log_level="error",
+                allow_multiple_runs=True,
+                force_mode_cpu_load=True,
+                force_cpu_power=8,
+                force_ram_power=2,
+            )
+            tracker.start()
+    except Exception:
+        tracker = None
+
+    try:
         llm = _get_llm(llm_model) if llm_model else _llm
         response = llm.invoke(prompt)
     except Exception as exc:
         logger.info("[TraceSummary %s] LLM invoke failed: %r", request_label, exc)
-        return None
+        return None, None
     duration = time.perf_counter() - start
+    try:
+        if tracker is not None:
+            fallback_kg = float(tracker.stop() or 0.0)
+    except Exception:
+        fallback_kg = None
     text = response.content if isinstance(response.content, str) else str(response.content)
     logger.info(
         "[TraceSummary %s] LLM responded in %.2fs • preview=%r",
@@ -506,16 +641,16 @@ def _call_llm(
         text[:300],
     )
     try:
-        return json.loads(text)
+        return json.loads(text), fallback_kg
     except json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                return json.loads(text[start : end + 1])
+                return json.loads(text[start : end + 1]), fallback_kg
             except Exception as exc:
                 logger.info("[TraceSummary %s] Failed to parse JSON snippet: %r", request_label, exc)
-    return None
+    return None, fallback_kg
 
 
 @app.post("/trace-summary", response_model=TraceSummaryResponse)
@@ -544,13 +679,17 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
         logger.info("[TraceSummary %s] No observations supplied; returning empty summary", request_label)
         return TraceSummaryResponse()
 
-    llm_result = _call_llm(
-        payload.trace_name or payload.trace_id,
-        narrative,
-        snippets,
-        request_label,
-        llm_model=payload.llm_model,
-    )
+    if payload.skip_llm:
+        logger.info("[TraceSummary %s] Skipping LLM summarization by request (skip_llm=true)", request_label)
+        llm_result, fallback_kg = None, None
+    else:
+        llm_result, fallback_kg = _call_llm(
+            payload.trace_name or payload.trace_id,
+            narrative,
+            snippets,
+            request_label,
+            llm_model=payload.llm_model,
+        )
 
     reasoning_summary = ReasoningSummary()
     observation_insights: List[ObservationInsight] = []
@@ -599,6 +738,13 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
         nli_model=payload.nli_model,
     )
 
+    carbon_summary = _compute_carbon_summary(
+        observations,
+        narrative.userQuestion,
+        request_label,
+        fallback_kg=fallback_kg,
+    )
+
     response = TraceSummaryResponse(
         userQuestion=narrative.userQuestion,
         planningTools=narrative.planningTools,
@@ -608,9 +754,10 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
         observationInsights=observation_insights,
         observationMetrics=metrics,
         rootCauseObservationId=root_cause,
+        carbonSummary=carbon_summary,
     )
     logger.info(
-        "[TraceSummary %s] Responding with reasoningSummary(goal=%s, plan=%d, obs=%d, result=%s, insights=%d, metrics=%d)",
+        "[TraceSummary %s] Responding with reasoningSummary(goal=%s, plan=%d, obs=%d, result=%s, insights=%d, metrics=%d) carbon=%s",
         request_label,
         bool(reasoning_summary.goal),
         len(reasoning_summary.plan),
@@ -618,5 +765,6 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
         bool(reasoning_summary.result),
         len(observation_insights),
         len(metrics),
+        "present" if carbon_summary else "missing",
     )
     return response

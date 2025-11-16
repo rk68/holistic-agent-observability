@@ -57,12 +57,28 @@ type ObservationMetric = {
   label: string
 }
 
+type CarbonPhase = {
+  kg: number
+  duration_s: number
+}
+
+type CarbonSummary = {
+  total_kg: number
+  duration_seconds: number
+  breakdown: {
+    reasoning: CarbonPhase
+    rest: CarbonPhase
+  }
+  source?: string
+}
+
 type StoredTraceSummary = {
   narrative: ExecutionNarrative | null
   reasoningSummary: ReasoningSummary | null
   observationInsights: ObservationInsight[]
   observationMetrics: ObservationMetric[]
   rootCauseObservationId: string | null
+  carbonSummary?: CarbonSummary | null
   timestamp: number
 }
 
@@ -244,6 +260,7 @@ const loadStoredTraceSummary = (traceId: string | null): StoredTraceSummary | nu
         observationInsights: Array.isArray(parsed.observationInsights) ? parsed.observationInsights : [],
         observationMetrics: Array.isArray(parsed.observationMetrics) ? parsed.observationMetrics : [],
         rootCauseObservationId: typeof parsed.rootCauseObservationId === 'string' ? parsed.rootCauseObservationId : null,
+        carbonSummary: parsed.carbonSummary ?? null,
         timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : Date.now(),
       }
     }
@@ -709,6 +726,7 @@ function App() {
   const [observationMetrics, setObservationMetrics] = useState<ObservationMetric[]>([])
   const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
   const [storedSummary, setStoredSummary] = useState<StoredTraceSummary | null>(null)
+  const [carbonSummary, setCarbonSummary] = useState<CarbonSummary | null>(null)
   const initialNliModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.nliModel)) ||
     NLI_MODEL_OPTIONS[0]?.id || 'cross-encoder/nli-deberta-v3-small'
   const initialLlmModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.llmModel)) ||
@@ -779,6 +797,7 @@ function App() {
       setObservationInsights(summary.observationInsights)
       setObservationMetrics(summary.observationMetrics)
       setRootCauseObservationId(summary.rootCauseObservationId)
+      setCarbonSummary(summary.carbonSummary ?? null)
       setNarrativeStatus('ready')
     },
     [],
@@ -1896,6 +1915,13 @@ function App() {
             ? value.rootCauseObservationId
             : null
         setRootCauseObservationId(rootCause)
+
+        const carbonRaw = value.carbonSummary
+        const nextCarbonSummary: CarbonSummary | null =
+          carbonRaw && typeof carbonRaw === 'object'
+            ? (carbonRaw as CarbonSummary)
+            : null
+        setCarbonSummary(nextCarbonSummary)
         setNarrativeStatus('ready')
 
         if (traceDetail) {
@@ -1905,6 +1931,7 @@ function App() {
             observationInsights: parsedInsights,
             observationMetrics: parsedMetrics,
             rootCauseObservationId: rootCause,
+            carbonSummary: nextCarbonSummary,
             timestamp: Date.now(),
           }
           persistStoredTraceSummary(traceDetail.id, storedPayload)
@@ -1920,6 +1947,7 @@ function App() {
         setObservationInsights([])
         setObservationMetrics([])
         setRootCauseObservationId(null)
+        setCarbonSummary(null)
         setNarrativeStatus('ready')
       } finally {
         updatePendingTrace(null)
@@ -2203,6 +2231,81 @@ function App() {
                       ))}
                     </ul>
                   </div>
+                  {carbonSummary ? (
+                    <div className="graph-metric-card graph-metric-card--carbon">
+                      <div className="graph-metric-card__header">
+                        <span className="graph-metric-card__label">Sustainability impact</span>
+                        <span className="graph-metric-card__stat">{carbonSummary.source || 'CodeCarbon'}</span>
+                      </div>
+                      <ul className="metric-distribution">
+                        <li className="metric-distribution__item">
+                          <div className="metric-distribution__label">
+                            <span className="metric-dot metric-dot--grounded" aria-hidden />
+                            <div>
+                              <strong>Total</strong>
+                              <span>{Math.round((carbonSummary.total_kg || 0) * 1_000_000).toLocaleString()} mg CO₂e</span>
+                            </div>
+                          </div>
+                          <div className="metric-distribution__bar" aria-hidden>
+                            <div className="metric-distribution__fill metric-distribution__fill--grounded" style={{ width: '100%' }} />
+                          </div>
+                          <span className="metric-distribution__percent">100%</span>
+                        </li>
+                        <li className="metric-distribution__item">
+                          <div className="metric-distribution__label">
+                            <span className="metric-dot metric-dot--grounded" aria-hidden />
+                            <div>
+                              <strong>Reasoning</strong>
+                              <span>
+                                {Math.round((carbonSummary.breakdown.reasoning.kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
+                              </span>
+                            </div>
+                          </div>
+                          <div className="metric-distribution__bar" aria-hidden>
+                            <div
+                              className="metric-distribution__fill metric-distribution__fill--grounded"
+                              style={{
+                                width: `${Math.min(100, Math.max(0, Math.round(
+                                  (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                                )))}%`,
+                              }}
+                            />
+                          </div>
+                          <span className="metric-distribution__percent">
+                            {Math.min(100, Math.max(0, Math.round(
+                              (carbonSummary.breakdown.reasoning.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                            )))}%
+                          </span>
+                        </li>
+                        <li className="metric-distribution__item">
+                          <div className="metric-distribution__label">
+                            <span className="metric-dot metric-dot--neutral" aria-hidden />
+                            <div>
+                              <strong>Rest</strong>
+                              <span>
+                                {Math.round((carbonSummary.breakdown.rest.kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
+                              </span>
+                            </div>
+                          </div>
+                          <div className="metric-distribution__bar" aria-hidden>
+                            <div
+                              className="metric-distribution__fill metric-distribution__fill--neutral"
+                              style={{
+                                width: `${Math.min(100, Math.max(0, Math.round(
+                                  (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                                )))}%`,
+                              }}
+                            />
+                          </div>
+                          <span className="metric-distribution__percent">
+                            {Math.min(100, Math.max(0, Math.round(
+                              (carbonSummary.breakdown.rest.kg / Math.max(1e-9, carbonSummary.total_kg)) * 100
+                            )))}%
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  ) : null}
                   <div className="graph-metric-card graph-metric-card--raw">
                     <div className="graph-metric-card__header">
                       <span className="graph-metric-card__label">Recent scores</span>
