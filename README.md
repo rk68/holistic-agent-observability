@@ -1,4 +1,7 @@
 # Holistic Agent Observability (Local & Frugal)
+<img width="1487" height="720" alt="image" src="https://github.com/user-attachments/assets/04398c09-a162-4da4-91c9-9a8e62b663f3" />
+<img width="1487" height="720" alt="image" src="https://github.com/user-attachments/assets/113805dd-7e68-4143-8577-f3285437650f" />
+
 
 End-to-end, local-first tracing, QA, and sustainability insights for LLM agents using only Ollama and open models.
 
