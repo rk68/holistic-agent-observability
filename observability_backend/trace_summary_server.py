@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, Iterable, List, Tuple, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -58,6 +59,9 @@ class TraceSummaryRequest(BaseModel):
     trace_id: str
     trace_name: Optional[str] = None
     observations: List[Dict[str, Any]]
+    # Optional overrides to control which models are used for this request
+    nli_model: Optional[str] = None
+    llm_model: Optional[str] = None
 
 
 class TraceSummaryResponse(BaseModel):
@@ -78,6 +82,15 @@ _llm = ChatOllama(
     temperature=settings.temperature,
     reasoning=True,
 )
+
+def _get_llm(model_name: Optional[str]) -> ChatOllama:
+    name = (model_name or settings.model).strip()
+    return ChatOllama(
+        model=name,
+        base_url=settings.ollama_base_url,
+        temperature=settings.temperature,
+        reasoning=True,
+    )
 
 app = FastAPI(title="Observability backend")
 app.add_middleware(
@@ -180,12 +193,65 @@ def _tool_output_summary(observation: Dict[str, Any]) -> Optional[str]:
     if observation.get("type") != "TOOL":
         return None
     name = observation.get("name")
-    name_value = name.strip() if isinstance(name, str) else "tool"
-    payload = _format_payload(observation.get("output"))
-    first_line = payload.splitlines()[0] if payload else ""
-    if len(first_line) > 200:
-        first_line = first_line[:197].rstrip() + "…"
-    return f"{name_value}: {first_line or '(no output)'}"
+    name_value = name.strip() if isinstance(name, str) and name.strip() else "tool"
+    output = observation.get("output")
+
+    segments: List[str] = []
+
+    def _stringify_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (list, tuple)):
+            preview = [
+                _stringify_value(item)
+                for item in value[:3]
+                if _stringify_value(item)
+            ]
+            return ", ".join(preview)
+        if isinstance(value, dict):
+            inner_parts: List[str] = []
+            for idx, (inner_key, inner_val) in enumerate(value.items()):
+                if idx >= 3:
+                    break
+                inner_text = _stringify_value(inner_val)
+                if inner_text:
+                    inner_parts.append(f"{inner_key}: {inner_text}")
+            return "; ".join(inner_parts)
+        return ""
+
+    if isinstance(output, dict):
+        for idx, (key, value) in enumerate(output.items()):
+            if idx >= 6:
+                break
+            text = _stringify_value(value)
+            if text:
+                segments.append(f"{key}: {text}")
+    elif isinstance(output, (list, tuple)):
+        for idx, item in enumerate(output[:5]):
+            text = _stringify_value(item)
+            if text:
+                segments.append(text if isinstance(item, str) else f"item {idx + 1}: {text}")
+
+    if not segments:
+        payload = _format_payload(output).strip()
+        if payload:
+            lines = [line.strip() for line in payload.splitlines() if line.strip()]
+            segments = lines[:4]
+
+    if not segments:
+        return f"{name_value}: (no output)"
+
+    snippet = "; ".join(segments)
+    snippet = snippet.replace("\n", " ")
+    if len(snippet) > 600:
+        snippet = snippet[:597].rstrip() + "…"
+    return f"{name_value}: {snippet}"
 
 
 def _planned_tools(observations: List[Dict[str, Any]]) -> List[str]:
@@ -271,9 +337,11 @@ def _compute_observation_metrics(
     observations: List[Dict[str, Any]],
     user_question: Optional[str],
     request_label: str,
+    nli_model: Optional[str] = None,
 ) -> Tuple[List[ObservationMetric], Optional[str]]:
     jobs: List[Dict[str, Any]] = []
-    tool_history: List[str] = []
+    recent_tools: Deque[str] = deque(maxlen=6)
+    pending_evidence: List[str] = []
     base = _premise_from_question(user_question)
 
     for obs in observations:
@@ -281,7 +349,8 @@ def _compute_observation_metrics(
         if obs_type == "TOOL":
             summary = _tool_output_summary(obs)
             if summary:
-                tool_history.append(summary)
+                recent_tools.append(summary)
+                pending_evidence.append(summary)
             continue
         if obs_type not in {"AGENT", "GENERATION"}:
             continue
@@ -292,9 +361,11 @@ def _compute_observation_metrics(
 
         reasoning = _extract_reasoning_text(obs)
         assistant = _extract_assistant_content(obs)
-        has_tools = bool(tool_history)
+        has_evidence = bool(pending_evidence or recent_tools)
+        evidence_block: List[str] = pending_evidence[:] if pending_evidence else list(recent_tools)
+        pending_evidence = []
 
-        if not has_tools and reasoning:
+        if not has_evidence and reasoning:
             jobs.append(
                 {
                     "observation_id": observation_id,
@@ -306,8 +377,8 @@ def _compute_observation_metrics(
             )
             continue
 
-        if has_tools:
-            premise = _premise_with_tools(base, tool_history[-6:])
+        if has_evidence:
+            premise = _premise_with_tools(base, evidence_block)
             if reasoning:
                 jobs.append(
                     {
@@ -333,7 +404,7 @@ def _compute_observation_metrics(
         return [], None
 
     pairs = [(job["premise"], job["hypothesis"]) for job in jobs]
-    scores = score_pairs(pairs)
+    scores = score_pairs(pairs, model_name=nli_model)
     metrics: List[ObservationMetric] = []
     root_cause: Optional[str] = None
 
@@ -401,6 +472,7 @@ def _call_llm(
     narrative: ExecutionNarrative,
     snippets: List[Dict[str, Any]],
     request_label: str,
+    llm_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     payload = {
         "trace_name": trace_name,
@@ -410,15 +482,18 @@ def _call_llm(
         "reasoning_snippets": snippets,
     }
     prompt = f"{_PROMPT_TEMPLATE}\nTrace metadata and reasoning (JSON):\n{json.dumps(payload, ensure_ascii=False)}"
+    model_used = (llm_model or settings.model)
     logger.info(
         "[TraceSummary %s] Invoking LLM model=%s (snippets=%d)",
         request_label,
-        settings.model,
+        model_used,
         len(snippets),
     )
     start = time.perf_counter()
     try:
-        response = _llm.invoke(prompt)
+        # Use per-request model if specified
+        llm = _get_llm(llm_model) if llm_model else _llm
+        response = llm.invoke(prompt)
     except Exception as exc:
         logger.info("[TraceSummary %s] LLM invoke failed: %r", request_label, exc)
         return None
@@ -469,7 +544,13 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
         logger.info("[TraceSummary %s] No observations supplied; returning empty summary", request_label)
         return TraceSummaryResponse()
 
-    llm_result = _call_llm(payload.trace_name or payload.trace_id, narrative, snippets, request_label)
+    llm_result = _call_llm(
+        payload.trace_name or payload.trace_id,
+        narrative,
+        snippets,
+        request_label,
+        llm_model=payload.llm_model,
+    )
 
     reasoning_summary = ReasoningSummary()
     observation_insights: List[ObservationInsight] = []
@@ -511,7 +592,12 @@ def trace_summary(payload: TraceSummaryRequest) -> TraceSummaryResponse:
     else:
         logger.info("[TraceSummary %s] LLM returned no structured result", request_label)
 
-    metrics, root_cause = _compute_observation_metrics(observations, narrative.userQuestion, request_label)
+    metrics, root_cause = _compute_observation_metrics(
+        observations,
+        narrative.userQuestion,
+        request_label,
+        nli_model=payload.nli_model,
+    )
 
     response = TraceSummaryResponse(
         userQuestion=narrative.userQuestion,

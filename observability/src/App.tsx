@@ -103,7 +103,21 @@ const STORAGE_KEYS = {
   pendingTraceId: 'observability:pendingTraceId',
   provider: 'observability:provider',
   apiKey: 'observability:apiKey',
+  nliModel: 'observability:nliModel',
+  llmModel: 'observability:llmModel',
 }
+
+const NLI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'cross-encoder/nli-deberta-v3-small', label: 'DeBERTa v3 Small (NLI)' },
+  { id: 'cross-encoder/nli-deberta-v3-base', label: 'DeBERTa v3 Base (NLI)' },
+  { id: 'cross-encoder/nli-roberta-base', label: 'RoBERTa Base (NLI)' },
+]
+
+const LLM_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'qwen3:4b', label: 'Qwen3 4B (Ollama)' },
+  { id: 'gpt-oss:20b', label: 'GPT‑OSS 20B (Ollama)' },
+  { id: 'llama3.1:8b', label: 'Llama 3.1 8B (Ollama)' },
+]
 
 type ObservabilityProvider = 'langfuse' | 'langsmith'
 
@@ -324,6 +338,15 @@ const NODE_THEMES: Record<
   },
 }
 
+const NODE_ICONS: Record<string, string> = {
+  GENERATION: '🤖',
+  TOOL: '🛠️',
+  AGENT: '🧠',
+  SPAN: '🧩',
+  CHAIN: '⛓️',
+  default: '📦',
+}
+
 type NodeVisualOptions = {
   kind: string
   isSelected: boolean
@@ -367,7 +390,7 @@ const getNodeVisuals = ({ kind, isSelected, hasIssue, borderline }: NodeVisualOp
     style: {
       borderRadius: 18,
       padding: '18px 22px',
-      border: `2px solid ${border}`,
+      border: `3px solid ${border}`,
       background,
       boxShadow,
       minWidth: 260,
@@ -633,6 +656,33 @@ function App() {
   const [observationInsights, setObservationInsights] = useState<ObservationInsight[]>([])
   const [observationMetrics, setObservationMetrics] = useState<ObservationMetric[]>([])
   const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
+  const initialNliModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.nliModel)) ||
+    NLI_MODEL_OPTIONS[0]?.id || 'cross-encoder/nli-deberta-v3-small'
+  const initialLlmModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.llmModel)) ||
+    LLM_MODEL_OPTIONS[0]?.id || 'qwen3:4b'
+  const [nliModel, setNliModel] = useState<string>(initialNliModel)
+  const [llmModel, setLlmModel] = useState<string>(initialLlmModel)
+
+  const metricOverview = useMemo(() => {
+    const totals = { grounded: 0, neutral: 0, contradicted: 0 }
+    for (const m of observationMetrics) {
+      if (m.label === 'ENTAILED') totals.grounded += 1
+      else if (m.label === 'NEUTRAL') totals.neutral += 1
+      else if (m.label === 'CONTRADICTED') totals.contradicted += 1
+    }
+    return totals
+  }, [observationMetrics])
+
+  const rawMetricSamples = useMemo(() => {
+    const items = observationMetrics.slice(0, 6).map((m) => ({
+      key: `${m.observationId}:${m.subject}:${m.metric}`,
+      title: `${m.subject} • ${m.metric.replaceAll('_', ' ')}`,
+      entailment: Math.max(0, Math.min(1, Number(m.entailment) || 0)),
+      neutral: Math.max(0, Math.min(1, Number(m.neutral) || 0)),
+      contradiction: Math.max(0, Math.min(1, Number(m.contradiction) || 0)),
+    }))
+    return items
+  }, [observationMetrics])
 
   const updatePendingTrace = useCallback((traceId: string | null) => {
     const record = persistPendingTrace(traceId)
@@ -643,6 +693,14 @@ function App() {
   useEffect(() => {
     safeWriteStorage(STORAGE_KEYS.provider, provider)
   }, [provider])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.nliModel, nliModel)
+  }, [nliModel])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.llmModel, llmModel)
+  }, [llmModel])
 
   useEffect(() => {
     if (!Object.keys(apiKeys).length) {
@@ -1037,6 +1095,8 @@ function App() {
           fontWeight: 600,
           background: '#1d4ed8',
           color: '#ffffff',
+          border: '3px solid #1e3a8a',
+          boxShadow: '0 8px 20px rgba(15,23,42,0.12)',
         },
       },
     ]
@@ -1392,6 +1452,7 @@ function App() {
         <span className="flow-node__metric flow-node__metric--root">Root cause</span>
       ) : null
 
+      const icon = NODE_ICONS[observation.type as keyof typeof NODE_ICONS] ?? NODE_ICONS.default
       const nodeLabel = (
         <div className="flow-node">
           <div className="flow-node__top">
@@ -1400,7 +1461,10 @@ function App() {
             </span>
             <span className="flow-node__step">Step {index + 1}</span>
           </div>
-          <div className="flow-node__title">{nodeTitle}</div>
+          <div className="flow-node__title-row">
+            <div className="flow-node__icon">{icon}</div>
+            <div className="flow-node__title">{nodeTitle}</div>
+          </div>
           {metricPill || rootPill ? (
             <div className="flow-node__meta">
               {metricPill}
@@ -1483,7 +1547,7 @@ function App() {
 
     console.info('[Observability] Graph built', { nodes: nodes.length, edges: edges.length })
     return { nodes, edges }
-  }, [traceDetail, orderedObservations, selectedObservation])
+  }, [traceDetail, orderedObservations, selectedObservation, observationMetricsById, rootCauseObservationId])
 
   const graphSubtitle = useMemo(() => {
     if (!selectedTrace) {
@@ -1550,6 +1614,8 @@ function App() {
         trace_id: traceDetail.id,
         trace_name: traceDetail.name ?? null,
         observations: orderedObservations,
+        nli_model: nliModel,
+        llm_model: llmModel,
       }
 
       try {
@@ -1840,8 +1906,10 @@ function App() {
               <TraceTable
                 traces={traces}
                 onSelect={handleSelectTrace}
+                onProcess={handleProcessTrace}
                 selectedTraceId={selectedTraceId}
                 loadingTraceId={loadingTraceId}
+                processingTraceId={narrativeStatus === 'processing' ? pendingTrace?.traceId ?? traceDetail?.id ?? null : null}
               />
             </div>
           ) : (
@@ -1853,6 +1921,45 @@ function App() {
               </p>
             </div>
           )}
+      </section>
+
+      <section className="app-card settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Model settings</h2>
+            <p>Select models for groundedness scoring and narrative generation. These do not affect the agent.</p>
+          </div>
+        </div>
+        <div className="settings-grid">
+          <div className="settings-field">
+            <label htmlFor="nli-model">NLI model</label>
+            <select
+              id="nli-model"
+              value={nliModel}
+              onChange={(e) => setNliModel(e.target.value)}
+            >
+              {NLI_MODEL_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="settings-field">
+            <label htmlFor="llm-model">Narrative LLM</label>
+            <select
+              id="llm-model"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+            >
+              {LLM_MODEL_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </section>
 
       <section className="app-card graph-card">
@@ -1912,7 +2019,66 @@ function App() {
           ) : null}
 
           {detailStatus === 'loaded' && orderedObservations.length > 0 ? (
-            <div className="graph-content">
+            <>
+              {observationMetrics.length > 0 ? (
+                <div className="graph-metrics">
+                  <div
+                    className={`graph-metric-card ${metricOverview.contradicted > 0 ? 'graph-metric-card--alert' : ''}`}
+                  >
+                    <span className="graph-metric-card__label">Groundedness outcomes</span>
+                    <ul>
+                      <li>
+                        <span>Grounded</span>
+                        <strong>{metricOverview.grounded}</strong>
+                      </li>
+                      <li>
+                        <span>Needs review</span>
+                        <strong>{metricOverview.neutral}</strong>
+                      </li>
+                      <li>
+                        <span>Contradiction</span>
+                        <strong>{metricOverview.contradicted}</strong>
+                      </li>
+                    </ul>
+                  </div>
+                  <div className="graph-metric-card graph-metric-card--raw">
+                    <span className="graph-metric-card__label">Recent scores</span>
+                    <ul className="graph-metric-raw-list">
+                      {rawMetricSamples.map((item) => (
+                        <li key={item.key} className="graph-metric-raw">
+                          <div className="graph-metric-raw__title">
+                            <strong>{item.title}</strong>
+                            <span>{Math.round(item.entailment * 100)}% grounded</span>
+                          </div>
+                          <div className="graph-metric-raw__scores">
+                            <span>
+                              <em>Grounded</em> {Math.round(item.entailment * 100)}%
+                            </span>
+                            <span>
+                              <em>Needs review</em> {Math.round(item.neutral * 100)}%
+                            </span>
+                            <span>
+                              <em>Contradiction</em> {Math.round(item.contradiction * 100)}%
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="graph-metric-card">
+                    <span className="graph-metric-card__label">About this metric</span>
+                    <details className="graph-metric-explainer">
+                      <summary>How groundedness is labeled</summary>
+                      <p>
+                        We score pairs with a cross-encoder NLI model and bucket by thresholds: contradiction ≥ 0.5 →
+                        Contradicted, entailment ≥ 0.6 → Grounded, otherwise Neutral. The premise includes the user
+                        query and recent tool evidence when available.
+                      </p>
+                    </details>
+                  </div>
+                </div>
+              ) : null}
+              <div className="graph-content">
               <div className="graph-container">
                 <ReactFlowProvider>
                   <ReactFlow
@@ -2215,17 +2381,11 @@ function App() {
                   <div className="observation-detail__empty">Select a node to view its payloads.</div>
                 )}
               </aside>
-            </div>
+              </div>
+            </>
           ) : null}
       </section>
 
-      <footer className="app-footer">
-        <small>
-          Credentials are read from <code>VITE_LANGFUSE_*</code> environment variables. Avoid
-          shipping production secrets to the browser—use this toolkit for local analysis or proxy the
-          requests through a backend.
-        </small>
-      </footer>
     </div>
   )
 }

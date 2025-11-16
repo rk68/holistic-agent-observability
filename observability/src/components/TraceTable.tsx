@@ -5,8 +5,10 @@ import './TraceTable.css'
 interface TraceTableProps {
   traces: LangfuseTrace[]
   onSelect?(trace: LangfuseTrace): void
+  onProcess?(trace: LangfuseTrace): void
   selectedTraceId?: string | null
   loadingTraceId?: string | null
+  processingTraceId?: string | null
 }
 
 const PAGE_SIZE = 10
@@ -34,8 +36,10 @@ function formatLatency(latency: number | null): string {
 export default function TraceTable({
   traces,
   onSelect,
+  onProcess,
   selectedTraceId,
   loadingTraceId,
+  processingTraceId,
 }: TraceTableProps) {
   const [page, setPage] = useState(0)
 
@@ -78,6 +82,7 @@ export default function TraceTable({
           {pageTraces.map((trace) => {
             const isSelected = trace.id === selectedTraceId
             const isLoading = loadingTraceId === trace.id
+            const isProcessing = processingTraceId === trace.id
 
             return (
               <tr key={trace.id} className={isSelected ? 'is-selected' : ''}>
@@ -105,6 +110,16 @@ export default function TraceTable({
                       disabled={isLoading}
                     >
                       {isLoading ? 'Loading…' : isSelected ? 'Viewing flow' : 'Visualize flow'}
+                    </button>
+                  ) : null}
+                  {onProcess ? (
+                    <button
+                      type="button"
+                      className="trace-action"
+                      onClick={() => onProcess(trace)}
+                      disabled={isLoading || isProcessing}
+                    >
+                      {isProcessing ? 'Processing…' : 'Process trace'}
                     </button>
                   ) : null}
                   <a
