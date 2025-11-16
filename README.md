@@ -39,6 +39,11 @@ Once connected, load your traces in the UI, click “Process trace,” and the t
 - Ollama installed locally (and desired models pulled)
 - Optional: Langfuse API access and local `.env` for credentials if you want to load remote traces
 
+## Setup
+- Copy `.env.example` to `.env` at the repo root and fill placeholders (no secrets committed).
+- Copy `observability/.env.example` to `observability/.env` for the frontend.
+- Pull desired Ollama models locally (for example: `ollama pull qwen3:4b`).
+
 ## Quick Start (single command)
 1. Install package (build and install locally):
    ```bash
@@ -51,6 +56,24 @@ Once connected, load your traces in the UI, click “Process trace,” and the t
    ```
    - Backend: http://127.0.0.1:8000
    - Frontend: http://localhost:5173
+
+## How to run and test
+- Start everything locally:
+   ```bash
+   glass-agent up --reload
+   ```
+   Then open the UI at http://localhost:5173
+- CLI quick check:
+   ```bash
+   glass-agent ask "What is my emergency fund status?"
+   ```
+   Confirms the agent runs and writes a CodeCarbon sidecar under `data/carbon/`.
+- UI workflow: connect Langfuse, load a trace, click “Process trace,” then verify the graph, timeline, and Sustainability panel render.
+- Backend-only check:
+   ```bash
+   glass-agent serve --reload
+   ```
+   Visit http://127.0.0.1:8000/docs to confirm the API is up.
 
 ## Importing Traces
 1) Configure provider in the UI (Langfuse for now).
@@ -128,7 +151,6 @@ data/carbon/                # CodeCarbon sidecar JSONs (created at runtime)
 - Ollama model errors: ensure models are pulled locally (e.g., `ollama pull qwen3:4b`).
 - Port conflicts: change ports with `glass-agent up --port 8001 --ui-port 5174`.
 - No carbon on first run: ensure you run an agent call (or sidecar exists) so the backend can join per-trace emissions.
-- Langfuse auth: set env vars or use mocked/synthetic traces.
 - Langfuse auth: set env vars (host and API keys) and verify connectivity.
 
 ## FAQs

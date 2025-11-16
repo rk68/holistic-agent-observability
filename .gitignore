@@ -25,6 +25,8 @@ observability/dist/
 observability/.env
 observability/.env.*
 *.env.local
+!.env.example
+!observability/.env.example
 
 # Vite / React artifacts
 *.local
