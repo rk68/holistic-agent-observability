@@ -302,6 +302,18 @@
   gap: 1rem;
 }
 
+.stored-summary-chip {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .graph-header h2 {
   margin: 0 0 0.35rem;
   font-size: 1.6rem;
@@ -346,16 +358,18 @@
   border: 1px solid #dbeafe;
   border-radius: 10px;
   background: #ffffff;
-  padding: 0.55rem 0.75rem;
+  padding: 0.65rem 0.85rem;
   box-shadow: 0 6px 12px rgba(59, 130, 246, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.35rem;
 }
 
-.graph-metric-card--alert {
-  border-color: #fecaca;
-  background: #fff5f5;
+.graph-metric-card__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .graph-metric-card__label {
@@ -366,31 +380,100 @@
   color: #475569;
 }
 
-.graph-metric-card strong {
-  font-size: 1rem;
-  color: #0f172a;
+.graph-metric-card__stat {
+  font-size: 0.78rem;
+  color: #64748b;
 }
 
-.graph-metric-card ul {
+.graph-metric-card--counts {
+  min-width: 260px;
+}
+
+.metric-distribution {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.45rem;
 }
 
-.graph-metric-card ul li {
-  display: flex;
-  justify-content: space-between;
+.metric-distribution__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1fr auto;
+  gap: 0.5rem;
   align-items: center;
 }
 
-.graph-metric-card--raw {
-  gap: 0.35rem;
+.metric-distribution__label {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
 }
 
-.graph-metric-raw-list {
+.metric-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.metric-dot--grounded,
+.legend-dot--grounded {
+  background: #16a34a;
+}
+
+.metric-dot--neutral,
+.legend-dot--neutral {
+  background: #f59e0b;
+}
+
+.metric-dot--contradiction,
+.legend-dot--contradiction {
+  background: #dc2626;
+}
+
+.metric-distribution__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.metric-distribution__fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.metric-distribution__fill--grounded {
+  background: linear-gradient(90deg, #4ade80, #16a34a);
+}
+
+.metric-distribution__fill--neutral {
+  background: linear-gradient(90deg, #fcd34d, #f59e0b);
+}
+
+.metric-distribution__fill--contradiction {
+  background: linear-gradient(90deg, #f87171, #dc2626);
+}
+
+.metric-distribution__percent {
+  font-weight: 600;
+  color: #0f172a;
+  min-width: 2.5rem;
+  text-align: right;
+}
+
+.graph-metric-card--raw {
+  min-width: 280px;
+}
+
+.graph-metric-card--alert {
+  border-color: #fecaca;
+  background: #fff5f5;
+}
+
+.graph-metric-card ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -402,8 +485,11 @@
 .graph-metric-raw {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 0.45rem 0.55rem;
+  padding: 0.5rem 0.6rem;
   background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .graph-metric-raw__title {
@@ -423,17 +509,65 @@
   color: #475569;
 }
 
-.graph-metric-raw__scores {
+.graph-metric-raw__stack {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  font-size: 0.78rem;
-  color: #1f2937;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e5e7eb;
 }
 
-.graph-metric-raw__scores span {
+.graph-metric-raw__segment {
+  display: inline-block;
+  height: 100%;
+}
+
+.graph-metric-raw__segment--grounded {
+  background: #16a34a;
+}
+
+.graph-metric-raw__segment--neutral {
+  background: #f59e0b;
+}
+
+.graph-metric-raw__segment--contradiction {
+  background: #dc2626;
+}
+
+.graph-metric-raw__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: #475569;
+}
+
+.legend-chip {
   display: inline-flex;
-  gap: 0.2rem;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+
+.legend-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.graph-metric-empty {
+  padding: 0.5rem 0;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.graph-metric-card--explainer {
+  min-width: 240px;
 }
 
 .graph-metric-explainer {
@@ -471,6 +605,15 @@
   margin: 0;
   line-height: 1.35;
   color: #1f2937;
+}
+
+.metric-guidelines {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: #1f2937;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 .graph-intro {

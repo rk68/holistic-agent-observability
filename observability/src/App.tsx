@@ -57,6 +57,15 @@ type ObservationMetric = {
   label: string
 }
 
+type StoredTraceSummary = {
+  narrative: ExecutionNarrative | null
+  reasoningSummary: ReasoningSummary | null
+  observationInsights: ObservationInsight[]
+  observationMetrics: ObservationMetric[]
+  rootCauseObservationId: string | null
+  timestamp: number
+}
+
 const normaliseStoredId = (value: string | null): string | null => {
   if (!value || value === 'null') {
     return null
@@ -129,6 +138,7 @@ const PROVIDER_OPTIONS: { id: ObservabilityProvider; label: string; helper: stri
 type ApiKeyMap = Partial<Record<ObservabilityProvider, string>>
 
 const SUMMARY_KEY_PREFIX = 'observability:traceSummary:'
+const STORED_TRACE_KEY_PREFIX = 'observability:processedTrace:'
 
 const safeReadStorage = (key: string): string | null => {
   if (typeof window === 'undefined') {
@@ -214,6 +224,48 @@ const persistNarrativeForTrace = (traceId: string, narrative: ExecutionNarrative
     safeWriteStorage(SUMMARY_KEY_PREFIX + traceId, JSON.stringify(narrative))
   } catch (error) {
     console.warn('[Observability] Failed to persist narrative for trace', traceId, error)
+  }
+}
+
+const loadStoredTraceSummary = (traceId: string | null): StoredTraceSummary | null => {
+  if (!traceId) {
+    return null
+  }
+  const raw = safeReadStorage(STORED_TRACE_KEY_PREFIX + traceId)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as StoredTraceSummary
+    if (parsed && typeof parsed === 'object') {
+      return {
+        narrative: parsed.narrative ?? null,
+        reasoningSummary: parsed.reasoningSummary ?? null,
+        observationInsights: Array.isArray(parsed.observationInsights) ? parsed.observationInsights : [],
+        observationMetrics: Array.isArray(parsed.observationMetrics) ? parsed.observationMetrics : [],
+        rootCauseObservationId: typeof parsed.rootCauseObservationId === 'string' ? parsed.rootCauseObservationId : null,
+        timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : Date.now(),
+      }
+    }
+  } catch (error) {
+    console.warn('[Observability] Failed to parse stored processed trace', traceId, error)
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, null)
+  }
+  return null
+}
+
+const persistStoredTraceSummary = (traceId: string, summary: StoredTraceSummary | null): void => {
+  if (!traceId) {
+    return
+  }
+  if (!summary) {
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, null)
+    return
+  }
+  try {
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, JSON.stringify(summary))
+  } catch (error) {
+    console.warn('[Observability] Failed to persist processed trace', traceId, error)
   }
 }
 
@@ -656,6 +708,7 @@ function App() {
   const [observationInsights, setObservationInsights] = useState<ObservationInsight[]>([])
   const [observationMetrics, setObservationMetrics] = useState<ObservationMetric[]>([])
   const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
+  const [storedSummary, setStoredSummary] = useState<StoredTraceSummary | null>(null)
   const initialNliModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.nliModel)) ||
     NLI_MODEL_OPTIONS[0]?.id || 'cross-encoder/nli-deberta-v3-small'
   const initialLlmModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.llmModel)) ||
@@ -673,6 +726,30 @@ function App() {
     return totals
   }, [observationMetrics])
 
+  const metricDistribution = useMemo(() => {
+    const total = observationMetrics.length || 1
+    return [
+      {
+        key: 'grounded',
+        label: 'Grounded',
+        count: metricOverview.grounded,
+        percent: Math.round((metricOverview.grounded / total) * 100),
+      },
+      {
+        key: 'neutral',
+        label: 'Needs review',
+        count: metricOverview.neutral,
+        percent: Math.round((metricOverview.neutral / total) * 100),
+      },
+      {
+        key: 'contradiction',
+        label: 'Contradiction',
+        count: metricOverview.contradicted,
+        percent: Math.round((metricOverview.contradicted / total) * 100),
+      },
+    ]
+  }, [metricOverview, observationMetrics.length])
+
   const rawMetricSamples = useMemo(() => {
     const items = observationMetrics.slice(0, 6).map((m) => ({
       key: `${m.observationId}:${m.subject}:${m.metric}`,
@@ -683,6 +760,52 @@ function App() {
     }))
     return items
   }, [observationMetrics])
+
+  const storedSummaryTimestamp = useMemo(() => {
+    if (!storedSummary) {
+      return null
+    }
+    try {
+      return formatDateTime(new Date(storedSummary.timestamp).toISOString())
+    } catch {
+      return null
+    }
+  }, [storedSummary])
+
+  const applyStoredSummary = useCallback(
+    (summary: StoredTraceSummary) => {
+      setRemoteNarrative(summary.narrative)
+      setReasoningSummary(summary.reasoningSummary)
+      setObservationInsights(summary.observationInsights)
+      setObservationMetrics(summary.observationMetrics)
+      setRootCauseObservationId(summary.rootCauseObservationId)
+      setNarrativeStatus('ready')
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!selectedTraceId) {
+      setStoredSummary(null)
+      return
+    }
+    const stored = loadStoredTraceSummary(selectedTraceId)
+    setStoredSummary(stored)
+    if (stored) {
+      applyStoredSummary(stored)
+    }
+  }, [selectedTraceId, applyStoredSummary])
+
+  const handleLoadStoredSummary = useCallback(() => {
+    if (!selectedTraceId) {
+      return
+    }
+    const stored = loadStoredTraceSummary(selectedTraceId)
+    if (stored) {
+      setStoredSummary(stored)
+      applyStoredSummary(stored)
+    }
+  }, [selectedTraceId, applyStoredSummary])
 
   const updatePendingTrace = useCallback((traceId: string | null) => {
     const record = persistPendingTrace(traceId)
@@ -1604,7 +1727,7 @@ function App() {
   }, [])
 
   const handleProcessTrace = useCallback(async () => {
-      if (!traceDetail || orderedObservations.length === 0) {
+      if (!traceDetail || orderedObservations.length === 0 || narrativeStatus === 'processing') {
         return
       }
       setNarrativeStatus('processing')
@@ -1687,6 +1810,7 @@ function App() {
         }
 
         const summaryRaw = value.reasoningSummary
+        let nextReasoningSummary: ReasoningSummary | null = null
         if (summaryRaw && typeof summaryRaw === 'object') {
           const goalValue =
             typeof (summaryRaw as { goal?: unknown }).goal === 'string'
@@ -1706,15 +1830,14 @@ function App() {
             typeof (summaryRaw as { result?: unknown }).result === 'string'
               ? ((summaryRaw as { result?: string }).result ?? '').trim()
               : ''
-          setReasoningSummary({
+          nextReasoningSummary = {
             goal: goalValue || null,
             plan: planValue,
             observations: observationsValue,
             result: resultValue || null,
-          })
-        } else {
-          setReasoningSummary(null)
+          }
         }
+        setReasoningSummary(nextReasoningSummary)
 
         const insightsRaw = Array.isArray(value.observationInsights) ? value.observationInsights : []
         const parsedInsights = insightsRaw
@@ -1774,6 +1897,19 @@ function App() {
             : null
         setRootCauseObservationId(rootCause)
         setNarrativeStatus('ready')
+
+        if (traceDetail) {
+          const storedPayload: StoredTraceSummary = {
+            narrative: nextNarrative,
+            reasoningSummary: nextReasoningSummary,
+            observationInsights: parsedInsights,
+            observationMetrics: parsedMetrics,
+            rootCauseObservationId: rootCause,
+            timestamp: Date.now(),
+          }
+          persistStoredTraceSummary(traceDetail.id, storedPayload)
+          setStoredSummary(storedPayload)
+        }
       } catch (error) {
         console.error('[Observability] Failed to summarise trace', error)
         setRemoteNarrative(null)
@@ -1789,7 +1925,7 @@ function App() {
         updatePendingTrace(null)
       }
     },
-    [traceDetail, orderedObservations, updatePendingTrace],
+    [traceDetail, orderedObservations, narrativeStatus, updatePendingTrace, nliModel, llmModel],
   )
 
   useEffect(() => {
@@ -1799,7 +1935,7 @@ function App() {
     if (pendingTrace.traceId !== traceDetail.id) {
       return
     }
-    if (narrativeStatus === 'processing') {
+    if (narrativeStatus !== 'idle') {
       return
     }
     void handleProcessTrace()
@@ -1986,6 +2122,16 @@ function App() {
                     ? 'Processing…'
                     : 'Reprocess trace'}
                 </button>
+                {storedSummary ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleLoadStoredSummary}
+                    disabled={narrativeStatus === 'processing'}
+                  >
+                    Load cached summary
+                  </button>
+                ) : null}
                 <a
                   className="secondary-button"
                   href={selectedTrace.url}
@@ -1995,6 +2141,9 @@ function App() {
                   Open in Langfuse
                 </a>
               </div>
+            ) : null}
+            {storedSummaryTimestamp ? (
+              <div className="stored-summary-chip">Cached {storedSummaryTimestamp}</div>
             ) : null}
           </div>
 
@@ -2022,58 +2171,93 @@ function App() {
             <>
               {observationMetrics.length > 0 ? (
                 <div className="graph-metrics">
-                  <div
-                    className={`graph-metric-card ${metricOverview.contradicted > 0 ? 'graph-metric-card--alert' : ''}`}
-                  >
-                    <span className="graph-metric-card__label">Groundedness outcomes</span>
-                    <ul>
-                      <li>
-                        <span>Grounded</span>
-                        <strong>{metricOverview.grounded}</strong>
-                      </li>
-                      <li>
-                        <span>Needs review</span>
-                        <strong>{metricOverview.neutral}</strong>
-                      </li>
-                      <li>
-                        <span>Contradiction</span>
-                        <strong>{metricOverview.contradicted}</strong>
-                      </li>
-                    </ul>
-                  </div>
-                  <div className="graph-metric-card graph-metric-card--raw">
-                    <span className="graph-metric-card__label">Recent scores</span>
-                    <ul className="graph-metric-raw-list">
-                      {rawMetricSamples.map((item) => (
-                        <li key={item.key} className="graph-metric-raw">
-                          <div className="graph-metric-raw__title">
-                            <strong>{item.title}</strong>
-                            <span>{Math.round(item.entailment * 100)}% grounded</span>
+                  <div className="graph-metric-card graph-metric-card--counts">
+                    <div className="graph-metric-card__header">
+                      <span className="graph-metric-card__label">Groundedness overview</span>
+                      <span className="graph-metric-card__stat">
+                        {observationMetrics.length} sample{observationMetrics.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <ul className="metric-distribution">
+                      {metricDistribution.map((entry) => (
+                        <li key={entry.key} className="metric-distribution__item">
+                          <div className="metric-distribution__label">
+                            <span className={`metric-dot metric-dot--${entry.key}`} aria-hidden />
+                            <div>
+                              <strong>{entry.label}</strong>
+                              <span>{entry.count} steps</span>
+                            </div>
                           </div>
-                          <div className="graph-metric-raw__scores">
-                            <span>
-                              <em>Grounded</em> {Math.round(item.entailment * 100)}%
-                            </span>
-                            <span>
-                              <em>Needs review</em> {Math.round(item.neutral * 100)}%
-                            </span>
-                            <span>
-                              <em>Contradiction</em> {Math.round(item.contradiction * 100)}%
-                            </span>
+                          <div className="metric-distribution__bar" aria-hidden>
+                            <div
+                              className={`metric-distribution__fill metric-distribution__fill--${entry.key}`}
+                              style={{ width: `${entry.percent}%` }}
+                            />
                           </div>
+                          <span className="metric-distribution__percent">{entry.percent}%</span>
                         </li>
                       ))}
                     </ul>
                   </div>
-                  <div className="graph-metric-card">
-                    <span className="graph-metric-card__label">About this metric</span>
+                  <div className="graph-metric-card graph-metric-card--raw">
+                    <div className="graph-metric-card__header">
+                      <span className="graph-metric-card__label">Recent scores</span>
+                      <span className="graph-metric-card__stat">Sampled snapshots</span>
+                    </div>
+                    {rawMetricSamples.length > 0 ? (
+                      <ul className="graph-metric-raw-list">
+                        {rawMetricSamples.map((item) => (
+                          <li key={item.key} className="graph-metric-raw">
+                            <div className="graph-metric-raw__title">
+                              <strong>{item.title}</strong>
+                              <span>{Math.round(item.entailment * 100)}% grounded</span>
+                            </div>
+                            <div className="graph-metric-raw__stack" aria-hidden>
+                              <span
+                                className="graph-metric-raw__segment graph-metric-raw__segment--contradiction"
+                                style={{ width: `${Math.max(0, Math.round(item.contradiction * 100))}%` }}
+                              />
+                              <span
+                                className="graph-metric-raw__segment graph-metric-raw__segment--neutral"
+                                style={{ width: `${Math.max(0, Math.round(item.neutral * 100))}%` }}
+                              />
+                              <span
+                                className="graph-metric-raw__segment graph-metric-raw__segment--grounded"
+                                style={{ width: `${Math.max(0, Math.round(item.entailment * 100))}%` }}
+                              />
+                            </div>
+                            <div className="graph-metric-raw__legend">
+                              <span className="legend-chip legend-chip--grounded">
+                                <span className="legend-dot legend-dot--grounded" />
+                                {Math.round(item.entailment * 100)}% grounded
+                              </span>
+                              <span className="legend-chip legend-chip--neutral">
+                                <span className="legend-dot legend-dot--neutral" />
+                                {Math.round(item.neutral * 100)}% neutral
+                              </span>
+                              <span className="legend-chip legend-chip--contradiction">
+                                <span className="legend-dot legend-dot--contradiction" />
+                                {Math.round(item.contradiction * 100)}% contradicted
+                              </span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="graph-metric-empty">Metrics will appear after processing a trace.</p>
+                    )}
+                  </div>
+                  <div className="graph-metric-card graph-metric-card--explainer">
+                    <div className="graph-metric-card__header">
+                      <span className="graph-metric-card__label">About this metric</span>
+                    </div>
                     <details className="graph-metric-explainer">
                       <summary>How groundedness is labeled</summary>
-                      <p>
-                        We score pairs with a cross-encoder NLI model and bucket by thresholds: contradiction ≥ 0.5 →
-                        Contradicted, entailment ≥ 0.6 → Grounded, otherwise Neutral. The premise includes the user
-                        query and recent tool evidence when available.
-                      </p>
+                      <ul className="metric-guidelines">
+                        <li>Premise = user question + up to 6 recent tool summaries.</li>
+                        <li>Hypotheses = reasoning snippet and final answer for each agent/model step.</li>
+                        <li>Cross-encoder NLI buckets: contradiction ≥ 0.5, entailment ≥ 0.6, else neutral.</li>
+                      </ul>
                     </details>
                   </div>
                 </div>
