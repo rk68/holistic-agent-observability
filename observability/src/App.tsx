@@ -12,6 +12,9 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 
 import TraceTable from './components/TraceTable'
+import DataFlowGraph from './components/DataFlowGraph'
+import { inferToolTypeByName, type DataSensitivity } from './lib/dataflow'
+import { fetchFailureSummary, type FailureSummary } from './lib/failureAnalysis'
 import {
   fetchRecentTraces,
   fetchTraceDetail,
@@ -57,6 +60,8 @@ type ObservationMetric = {
   label: string
 }
 
+type GraphMode = 'execution' | 'dataflow'
+
 const normaliseStoredId = (value: string | null): string | null => {
   if (!value || value === 'null') {
     return null
@@ -85,6 +90,7 @@ type GraphNodeData = {
   label: ReactNode
   kind: string
   step?: number
+  sensitivity?: DataSensitivity
 }
 
 type GraphNode = ReactFlowNode<GraphNodeData>
@@ -633,6 +639,8 @@ function App() {
   const [observationInsights, setObservationInsights] = useState<ObservationInsight[]>([])
   const [observationMetrics, setObservationMetrics] = useState<ObservationMetric[]>([])
   const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
+  const [graphMode, setGraphMode] = useState<GraphMode>('execution')
+  const [failureSummary, setFailureSummary] = useState<FailureSummary | null>(null)
 
   const updatePendingTrace = useCallback((traceId: string | null) => {
     const record = persistPendingTrace(traceId)
@@ -717,6 +725,7 @@ function App() {
     setSelectedObservationId(null)
     setNarrativeStatus('idle')
     setRemoteNarrative(null)
+    setFailureSummary(null)
 
     try {
       const detail = await fetchTraceDetail(trace.id)
@@ -727,6 +736,16 @@ function App() {
       setTraceDetail(detail)
       setDetailStatus('loaded')
       setSelectedObservationId(detail.observations.length > 0 ? detail.observations[0].id : null)
+
+      // Best-effort: fetch failure summary from the backend, if available.
+      void (async () => {
+        const summary = await fetchFailureSummary(trace.id)
+        if (!summary) {
+          setFailureSummary(null)
+          return
+        }
+        setFailureSummary(summary)
+      })()
     } catch (error) {
       setTraceDetail(null)
       setDetailStatus('error')
@@ -1410,6 +1429,21 @@ function App() {
         </div>
       )
 
+      let sensitivity: DataSensitivity | undefined
+      if (observation.type === 'TOOL') {
+        const toolDefinition = inferToolTypeByName(observation.name ?? undefined)
+        sensitivity = toolDefinition.artefact.defaultSensitivity
+      }
+
+      let borderColor = '#cbd5f5'
+      if (sensitivity === 'high') {
+        borderColor = '#dc2626'
+      } else if (sensitivity === 'medium') {
+        borderColor = '#ea580c'
+      } else if (sensitivity === 'low') {
+        borderColor = '#16a34a'
+      }
+
       nodes.push({
         id: observation.id,
         position: {
@@ -1420,6 +1454,7 @@ function App() {
           label: nodeLabel,
           kind: observation.type,
           step: index + 1,
+          sensitivity,
         },
         draggable: false,
         selectable: true,
@@ -1517,6 +1552,26 @@ function App() {
     }
     return observationInsights.filter((insight) => insight.observationId === selectedObservation.id)
   }, [selectedObservation, observationInsights])
+
+  const selectedObservationFailures = useMemo(() => {
+    if (!selectedObservation || !failureSummary) {
+      return null
+    }
+
+    const perObservation = failureSummary.per_observation_failures ?? {}
+    const entry = perObservation[selectedObservation.id]
+    if (!entry) {
+      return null
+    }
+
+    const codes = new Set(entry.codes ?? [])
+    const failuresForNode = failureSummary.failure_types.filter((failure) => codes.has(failure.code))
+
+    return {
+      entry,
+      failures: failuresForNode,
+    }
+  }, [selectedObservation, failureSummary])
 
   const loadingTraceId = detailStatus === 'loading' ? selectedTraceId : null
 
@@ -1813,56 +1868,57 @@ function App() {
       </section>
 
       <section className="app-card">
-          <div className="panel-header">
-            <button
-              type="button"
-              className="primary-button"
-              onClick={handleConnect}
-              disabled={status === 'connecting'}
-            >
-              {status === 'connecting'
-                ? 'Connecting…'
-                : status === 'connected'
-                ? 'Refresh traces'
-                : 'Connect to Langfuse'}
-            </button>
-            <span className={`status-badge status-${status}`}>{statusLabel}</span>
+        <div className="panel-header">
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleConnect}
+            disabled={status === 'connecting'}
+          >
+            {status === 'connecting'
+              ? 'Connecting…'
+              : status === 'connected'
+              ? 'Refresh traces'
+              : 'Connect to Langfuse'}
+          </button>
+          <span className={`status-badge status-${status}`}>{statusLabel}</span>
+        </div>
+
+        {status === 'error' && errorMessage ? (
+          <div className="error-banner" role="alert">
+            {errorMessage}
           </div>
+        ) : null}
 
-          {status === 'error' && errorMessage ? (
-            <div className="error-banner" role="alert">
-              {errorMessage}
-            </div>
-          ) : null}
-
-          {hasTraces ? (
-            <div className="trace-table-scroll">
-              <TraceTable
-                traces={traces}
-                onSelect={handleSelectTrace}
-                selectedTraceId={selectedTraceId}
-                loadingTraceId={loadingTraceId}
-              />
-            </div>
-          ) : (
-            <div className="empty-state">
-              <h2>Preview your Langfuse traces</h2>
-              <p>
-                Click the button above to import recent traces. Store credentials in
-                <code>.env</code> (see <code>.env.example</code>) so this interface can connect on your behalf.
-              </p>
-            </div>
-          )}
+        {hasTraces ? (
+          <div className="trace-table-scroll">
+            <TraceTable
+              traces={traces}
+              onSelect={handleSelectTrace}
+              selectedTraceId={selectedTraceId}
+              loadingTraceId={loadingTraceId}
+            />
+          </div>
+        ) : (
+          <div className="empty-state">
+            <h2>Preview your Langfuse traces</h2>
+            <p>
+              Click the button above to import recent traces. Store credentials in
+              <code>.env</code> (see <code>.env.example</code>) so this interface can connect on your behalf.
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="app-card graph-card">
-          <div className="graph-header">
-            <div>
-              <h2>{selectedTrace ? selectedTrace.name || 'Trace flow' : 'Trace flow'}</h2>
-              <p>{graphSubtitle}</p>
-            </div>
+        <div className="graph-header">
+          <div>
+            <h2>{selectedTrace ? selectedTrace.name || 'Trace flow' : 'Trace flow'}</h2>
+            <p>{graphSubtitle}</p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             {selectedTrace ? (
-              <div className="graph-header-actions">
+              <>
                 <button
                   type="button"
                   className="secondary-button"
@@ -1887,31 +1943,49 @@ function App() {
                 >
                   Open in Langfuse
                 </a>
-              </div>
+              </>
             ) : null}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setGraphMode('execution')}
+              disabled={graphMode === 'execution'}
+            >
+              Execution flow
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setGraphMode('dataflow')}
+              disabled={graphMode === 'dataflow'}
+            >
+              Data-flow view
+            </button>
           </div>
+        </div>
 
-          {detailStatus === 'loading' ? (
-            <div className="info-banner">Loading trace observations…</div>
-          ) : null}
+        {detailStatus === 'loading' ? (
+          <div className="info-banner">Loading trace observations…</div>
+        ) : null}
 
-          {detailStatus === 'error' && detailError ? (
-            <div className="error-banner" role="alert">
-              {detailError}
-            </div>
-          ) : null}
+        {detailStatus === 'error' && detailError ? (
+          <div className="error-banner" role="alert">
+            {detailError}
+          </div>
+        ) : null}
 
-          {detailStatus === 'loaded' && orderedObservations.length === 0 ? (
-            <div className="empty-state graph-empty-state">No observations recorded for this trace yet.</div>
-          ) : null}
+        {detailStatus === 'loaded' && orderedObservations.length === 0 ? (
+          <div className="empty-state graph-empty-state">No observations recorded for this trace yet.</div>
+        ) : null}
 
-          {detailStatus !== 'loading' && !selectedTrace ? (
-            <div className="empty-state graph-empty-state">
-              Select a trace to render its flow graph.
-            </div>
-          ) : null}
+        {detailStatus !== 'loading' && !selectedTrace ? (
+          <div className="empty-state graph-empty-state">
+            Select a trace to render its flow graph.
+          </div>
+        ) : null}
 
-          {detailStatus === 'loaded' && orderedObservations.length > 0 ? (
+        {detailStatus === 'loaded' && orderedObservations.length > 0 ? (
+          graphMode === 'execution' ? (
             <div className="graph-content">
               <div className="graph-container">
                 <ReactFlowProvider>
@@ -1991,7 +2065,9 @@ function App() {
                             <div className="metric-bar__track">
                               <div
                                 className="metric-bar__fill metric-bar__fill--contradiction"
-                                style={{ width: `${Math.min(100, Math.max(0, selectedMetric.contradiction * 100))}%` }}
+                                style={{
+                                  width: `${Math.min(100, Math.max(0, selectedMetric.contradiction * 100))}%`,
+                                }}
                               />
                             </div>
                             <strong>{Math.round(selectedMetric.contradiction * 100)}%</strong>
@@ -2216,7 +2292,127 @@ function App() {
                 )}
               </aside>
             </div>
-          ) : null}
+          ) : (
+            <>
+              <div className="graph-legend">
+                <p>
+                  <strong>Data-flow view.</strong> Node fill colour shows the stage (user, retrieval,
+                  tools, LLM, agent, output). Border colour shows risk: grey = none, green = low,
+                  orange = medium, red = high.
+                </p>
+                <p>
+                  Click a node to see its inputs, outputs, metadata, and failure analysis details on
+                  the right.
+                </p>
+                {failureSummary ? (
+                  <p>
+                    Failure analysis summary:{' '}
+                    {failureSummary.has_failure
+                      ? `${failureSummary.failure_types.length} failure${
+                          failureSummary.failure_types.length === 1 ? '' : 's'
+                        } detected across this trace.`
+                      : 'no failures detected for this trace.'}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="graph-content">
+                <div className="graph-container">
+                  {traceDetail ? (
+                    <DataFlowGraph
+                      trace={traceDetail}
+                      observations={orderedObservations}
+                      failures={failureSummary ?? undefined}
+                      selectedObservationId={selectedObservation?.id}
+                      onSelectObservation={(observationId) => setSelectedObservationId(observationId)}
+                    />
+                  ) : null}
+                </div>
+                <aside className="observation-detail">
+                  {selectedObservation ? (
+                    <div className="observation-detail__content">
+                      <header className="observation-detail__header">
+                        <span className="observation-step">Step {selectedObservationIndex + 1}</span>
+                        <h3>{toNodeLabel(selectedObservation, selectedObservationIndex + 1)}</h3>
+                        <p>{formatDateTime(selectedObservation.startTime)}</p>
+                      </header>
+
+                      {selectedObservationFailures ? (
+                        <div className="observation-failures">
+                          <h4>Failure analysis</h4>
+                          <p>
+                            Overall severity{' '}
+                            <strong>{selectedObservationFailures.entry.max_severity}</strong>
+                          </p>
+                          {selectedObservationFailures.failures.length > 0 ? (
+                            <ul>
+                              {selectedObservationFailures.failures.map((failure) => (
+                                <li key={failure.code}>
+                                  <strong>{failure.code}</strong>
+                                  {failure.description ? ` – ${failure.description}` : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      ) : failureSummary ? (
+                        <div className="observation-failures">
+                          <h4>Failure analysis</h4>
+                          <p>No failures associated with this node.</p>
+                        </div>
+                      ) : null}
+
+                      {highlight && highlight.value ? (
+                        <div className="observation-highlight">
+                          <h4>{highlight.label}</h4>
+                          <p>{truncate(highlight.value, 240)}</p>
+                        </div>
+                      ) : null}
+
+                      <dl className="observation-meta">
+                        {selectedObservation.name ? (
+                          <div>
+                            <dt>Name</dt>
+                            <dd>{selectedObservation.name}</dd>
+                          </div>
+                        ) : null}
+                        {detailMetadata?.langgraph_node ? (
+                          <div>
+                            <dt>LangGraph node</dt>
+                            <dd>{String(detailMetadata.langgraph_node)}</dd>
+                          </div>
+                        ) : null}
+                        {selectedObservation.endTime ? (
+                          <div>
+                            <dt>Finished</dt>
+                            <dd>{formatDateTime(selectedObservation.endTime)}</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+
+                      <div className="observation-payloads">
+                        <details open>
+                          <summary>Output / Reasoning</summary>
+                          <pre>{formattedOutput}</pre>
+                        </details>
+                        <details>
+                          <summary>Input</summary>
+                          <pre>{formattedInput}</pre>
+                        </details>
+                        <details>
+                          <summary>Metadata</summary>
+                          <pre>{formattedMetadata}</pre>
+                        </details>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="observation-detail__empty">Select a node to view its payloads.</div>
+                  )}
+                </aside>
+              </div>
+            </>
+          )
+        ) : null}
       </section>
 
       <footer className="app-footer">

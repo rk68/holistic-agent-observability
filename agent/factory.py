@@ -4,7 +4,12 @@ from typing import Iterable, Sequence
 
 import os
 import requests
-from langchain_aws import ChatBedrockConverse
+
+try:  # Optional AWS Bedrock integration
+    from langchain_aws import ChatBedrockConverse
+except Exception:  # pragma: no cover - allow running without AWS dependencies
+    ChatBedrockConverse = None  # type: ignore[assignment]
+
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ChatMessage, HumanMessage
@@ -133,6 +138,11 @@ def _resolve_model(settings: AgentSettings) -> BaseChatModel:
     backend = settings.agent_backend.strip().lower()
 
     if backend in {"aws", "aws_bedrock", "bedrock"}:
+        if ChatBedrockConverse is None:
+            raise ImportError(
+                "AWS backend selected but langchain_aws is not installed. "
+                "Install 'langchain-aws' or set AGENT_BACKEND=ollama to use the local Ollama backend."
+            )
         # Use the official LangChain ChatBedrockConverse integration, which fully
         # supports tool calling via .bind_tools. AWS credentials and region are
         # picked up from the standard environment variables or AWS config.
