@@ -10,6 +10,14 @@ from typing import Any, Callable, Final
 
 from langchain_core.tools import tool
 
+from .state import get_current_state
+from .visibility import (
+    ArtefactInstance,
+    DataArtefactKind,
+    DataSensitivity,
+    get_current_tracker,
+)
+
 _PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 _DATA_ROOT: Final[Path] = _PROJECT_ROOT / "data"
 _BANKING_DATA_PATH: Final[Path] = _DATA_ROOT / "banking" / "banking_state.json"
@@ -37,6 +45,39 @@ _SAFE_FUNCTIONS: Final[dict[str, Callable[..., float | int]]] = {
 }
 
 
+def _map_sensitivity_level(value: DataSensitivity | None) -> str:
+    if value is DataSensitivity.HIGH:
+        return "HIGHLY_SENSITIVE"
+    if value is DataSensitivity.MEDIUM:
+        return "SENSITIVE"
+    if value is DataSensitivity.LOW:
+        return "INTERNAL"
+    return "PUBLIC"
+
+
+def _record_data_artefact(
+    *,
+    instance: ArtefactInstance,
+    source: str,
+    payload: dict[str, Any],
+    fields_sensitivity: dict[str, str] | None = None,
+) -> None:
+    state = get_current_state()
+    if state is None:
+        return
+
+    data_context = state.setdefault("data_context", {})
+    level = _map_sensitivity_level(instance.sensitivity)
+    artefact: dict[str, Any] = {
+        "id": instance.id,
+        "source": source,
+        "payload": payload,
+        "sensitivity": level,
+        "fields_sensitivity": dict(fields_sensitivity or {}),
+    }
+    data_context[instance.id] = artefact
+
+
 def _safe_eval(expression: str) -> float:
     tree = ast.parse(expression, mode="eval")
     for node in ast.walk(tree):
@@ -57,7 +98,25 @@ def calculator(expression: str) -> str:
     """
 
     solution = _safe_eval(expression)
-    return str(solution)
+    result = str(solution)
+
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="math.calculator",
+            kind=DataArtefactKind.TOOL_OUTPUT,
+            sensitivity=DataSensitivity.LOW,
+            tags=["math"],
+        )
+
+        _record_data_artefact(
+            instance=instance,
+            source="tool:math.calculator",
+            payload={"expression": expression, "result": result},
+            fields_sensitivity={"expression": "INTERNAL", "result": "INTERNAL"},
+        )
+
+    return result
 
 
 @tool("project.read_file", return_direct=False)
@@ -75,7 +134,26 @@ def read_project_file(relative_path: str) -> str:
 
     if not path.is_file():
         raise FileNotFoundError("File is outside the project or does not exist")
-    return path.read_text(encoding="utf-8")
+
+    contents = path.read_text(encoding="utf-8")
+
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="project.read_file",
+            kind=DataArtefactKind.FILE_CONTENTS,
+            sensitivity=DataSensitivity.MEDIUM,
+            tags=["file"],
+        )
+
+        _record_data_artefact(
+            instance=instance,
+            source="tool:project.read_file",
+            payload={"path": str(path), "preview": contents[:2000]},
+            fields_sensitivity={"path": "INTERNAL", "preview": "SENSITIVE"},
+        )
+
+    return contents
 
 
 def _parse_iso8601(value: str) -> datetime:
@@ -129,10 +207,34 @@ def get_account_balance(account_identifier: str) -> str:
             parts.append(f"Credit limit: {limit_amount:,.2f} {currency}")
         if utilization is not None:
             parts.append(f"Utilization: {utilization:.1f}%")
-        return "\n".join(parts)
+        result = "\n".join(parts)
+    else:
+        balance = account.get("balance", 0.0)
+        result = f"Available balance for {account['display_name']}: {balance:,.2f} {currency}"
 
-    balance = account.get("balance", 0.0)
-    return f"Available balance for {account['display_name']}: {balance:,.2f} {currency}"
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="banking.get_account_balance",
+            kind=DataArtefactKind.TOOL_OUTPUT,
+            sensitivity=DataSensitivity.HIGH,
+            tags=["banking", "balance"],
+        )
+
+        _record_data_artefact(
+            instance=instance,
+            source="tool:banking.get_account_balance",
+            payload={
+                "account_identifier": account_identifier,
+                "preview": result[:2000],
+            },
+            fields_sensitivity={
+                "account_identifier": "HIGHLY_SENSITIVE",
+                "preview": "HIGHLY_SENSITIVE",
+            },
+        )
+
+    return result
 
 
 @tool("banking.get_recent_transactions", return_direct=False)
@@ -174,21 +276,47 @@ def get_recent_transactions(
     ]
     if not transactions:
         lines.append("• No transactions found in the requested window.")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+    else:
+        for txn in transactions:
+            timestamp = _parse_iso8601(txn["timestamp"]).strftime("%Y-%m-%d %H:%M")
+            amount = float(txn.get("amount", 0.0))
+            tag = " 🔍" if txn in highlight and minimum_amount is not None else ""
+            lines.append(
+                f"• {timestamp}: {amount:,.2f} ({txn.get('category', 'uncategorized')}) - {txn.get('description', '')}{tag}"
+            )
 
-    for txn in transactions:
-        timestamp = _parse_iso8601(txn["timestamp"]).strftime("%Y-%m-%d %H:%M")
-        amount = float(txn.get("amount", 0.0))
-        tag = " 🔍" if txn in highlight and minimum_amount is not None else ""
-        lines.append(
-            f"• {timestamp}: {amount:,.2f} ({txn.get('category', 'uncategorized')}) - {txn.get('description', '')}{tag}"
+        if minimum_amount is not None and highlight:
+            lines.append(
+                f"Highlighted items exceed |amount| ≥ {minimum_amount:,.2f}."
+            )
+        result = "\n".join(lines)
+
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="banking.get_recent_transactions",
+            kind=DataArtefactKind.TOOL_OUTPUT,
+            sensitivity=DataSensitivity.HIGH,
+            tags=["banking", "transactions"],
         )
 
-    if minimum_amount is not None and highlight:
-        lines.append(
-            f"Highlighted items exceed |amount| ≥ {minimum_amount:,.2f}."
+        _record_data_artefact(
+            instance=instance,
+            source="tool:banking.get_recent_transactions",
+            payload={
+                "account_identifier": account_identifier,
+                "lookback_days": lookback_days,
+                "minimum_amount": minimum_amount,
+                "preview": result[:2000],
+            },
+            fields_sensitivity={
+                "account_identifier": "HIGHLY_SENSITIVE",
+                "preview": "HIGHLY_SENSITIVE",
+            },
         )
-    return "\n".join(lines)
+
+    return result
 
 
 @tool("banking.recommend_products", return_direct=False)
@@ -215,7 +343,30 @@ def recommend_products(
         ]
 
     if not products:
-        return "No matching products found for the requested focus."
+        result = "No matching products found for the requested focus."
+        tracker = get_current_tracker()
+        if tracker is not None:
+            instance = tracker.register_tool_result(
+                tool_name="banking.recommend_products",
+                kind=DataArtefactKind.TOOL_OUTPUT,
+                sensitivity=DataSensitivity.MEDIUM,
+                tags=["banking", "products"],
+            )
+            _record_data_artefact(
+                instance=instance,
+                source="tool:banking.recommend_products",
+                payload={
+                    "goal": goal,
+                    "segment": segment,
+                    "preview": result,
+                },
+                fields_sensitivity={
+                    "goal": "INTERNAL",
+                    "segment": "INTERNAL",
+                    "preview": "INTERNAL",
+                },
+            )
+        return result
 
     products.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     selection = products[: max(1, top_k)]
@@ -233,7 +384,33 @@ def recommend_products(
             summary_parts.append(f"APY {product['apy_percent']:.2f}%")
         lines.append("• " + " — ".join(summary_parts))
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="banking.recommend_products",
+            kind=DataArtefactKind.TOOL_OUTPUT,
+            sensitivity=DataSensitivity.MEDIUM,
+            tags=["banking", "products"],
+        )
+
+        _record_data_artefact(
+            instance=instance,
+            source="tool:banking.recommend_products",
+            payload={
+                "goal": goal,
+                "segment": segment,
+                "preview": result[:2000],
+            },
+            fields_sensitivity={
+                "goal": "INTERNAL",
+                "segment": "INTERNAL",
+                "preview": "INTERNAL",
+            },
+        )
+
+    return result
 
 
 @tool("banking.sql_query", return_direct=False)
@@ -272,7 +449,31 @@ def run_banking_sql(query: str) -> str:
     separator = " | ".join(["-" * len(col) for col in headers])
     body_lines = [" | ".join(str(row[col]) for col in headers) for row in rows]
 
-    return "\n".join([header_line, separator, *body_lines])
+    result = "\n".join([header_line, separator, *body_lines])
+
+    tracker = get_current_tracker()
+    if tracker is not None:
+        instance = tracker.register_tool_result(
+            tool_name="banking.sql_query",
+            kind=DataArtefactKind.SQL_ROWSET,
+            sensitivity=DataSensitivity.HIGH,
+            tags=["banking", "sql"],
+        )
+
+        _record_data_artefact(
+            instance=instance,
+            source="tool:banking.sql_query",
+            payload={
+                "query": normalized,
+                "preview": result[:2000],
+            },
+            fields_sensitivity={
+                "query": "INTERNAL",
+                "preview": "HIGHLY_SENSITIVE",
+            },
+        )
+
+    return result
 
 
 DEFAULT_TOOLS: Final[dict[str, tool]] = {

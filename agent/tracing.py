@@ -2,11 +2,35 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Any
+from collections.abc import Sequence
 
-from langfuse import Langfuse, observe
+from langchain_core.messages import AIMessage
+from langfuse import Langfuse, observe, get_client
 from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
 
+from .callbacks import ReasoningTraceCallback
 from .config import AgentSettings, load_settings
+from .leak_judge import run_leak_judge
+from .state import create_initial_state, get_current_state, set_current_state
+from .visibility import VisibilityTracker, set_current_tracker
+
+
+def _extract_final_answer(result: Any) -> str | None:
+    """Best-effort extraction of the final AI message text from an agent result."""
+
+    if not isinstance(result, dict):
+        return None
+
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence):
+        return None
+
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            content = getattr(message, "content", "")
+            return content if isinstance(content, str) else str(content)
+
+    return None
 
 
 def _configure_tracer(settings: AgentSettings) -> Langfuse:
@@ -43,15 +67,60 @@ def traced_graph(graph, settings: AgentSettings | None = None):
 
     @observe(name=settings.agent_name)
     def _run(payload: dict[str, Any], *, config: dict[str, Any] | None):
-        with _langfuse_context(settings) as handler:
-            if handler or config:
+        tracker = VisibilityTracker()
+        set_current_tracker(tracker)
+        initial_messages = []
+        raw_messages = payload.get("messages") if isinstance(payload, dict) else None
+        if isinstance(raw_messages, Sequence):
+            initial_messages = list(raw_messages)
+        state = create_initial_state(initial_messages)
+        set_current_state(state)
+        try:
+            with _langfuse_context(settings) as handler:
                 updated_config = dict(config or {})
+                callbacks = list(updated_config.get("callbacks", []))
+                callbacks.append(ReasoningTraceCallback())
                 if handler:
-                    callbacks = list(updated_config.get("callbacks", []))
                     callbacks.append(handler)
+                if callbacks:
                     updated_config["callbacks"] = callbacks
-                return graph.invoke(payload, config=updated_config)
-            return graph.invoke(payload)
+
+                result = graph.invoke(payload, config=updated_config) if updated_config else graph.invoke(payload)
+
+            # Best-effort LLM-as-a-judge for the final answer when tracing is enabled.
+            if settings.enable_tracing:
+                try:
+                    final_answer = _extract_final_answer(result) or ""
+                    if final_answer:
+                        judge = run_leak_judge(final_answer, tracker, settings)
+                    else:
+                        judge = None
+
+                    client = get_client()
+
+                    if judge is not None:
+                        span_metadata: dict[str, Any] = {
+                            "visible_data": tracker.snapshot_visible_ids(),
+                            "final_answer": final_answer,
+                            "leak_judge": judge,
+                        }
+                        client.update_current_span(metadata=span_metadata)
+
+                    state_for_trace = get_current_state()
+                    if state_for_trace is not None:
+                        trace_metadata: dict[str, Any] = {
+                            "reasoning_trace": state_for_trace.get("reasoning_trace", []),
+                            "data_context": state_for_trace.get("data_context", {}),
+                        }
+                        client.update_current_trace(metadata=trace_metadata)
+                except Exception:
+                    # Never break the agent if leak judging fails.
+                    pass
+
+            return result
+        finally:
+            set_current_tracker(None)
+            set_current_state(None)
 
     class _TracedGraph:
         def __init__(self, inner):
