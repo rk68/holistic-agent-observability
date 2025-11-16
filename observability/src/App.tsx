@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import ReactFlow, {
   Background,
   Controls,
@@ -33,8 +33,56 @@ type ExecutionNarrative = {
   finalAnswer: string | null
 }
 
-type GraphNodeData = {
+type ReasoningSummary = {
+  goal: string | null
+  plan: string[]
+  observations: string[]
+  result: string | null
+}
+
+type ObservationInsight = {
+  observationId: string
+  stage: string | null
+  summary: string | null
+  bullets: string[]
+}
+
+type ObservationMetric = {
+  observationId: string
+  metric: string
+  subject: string
+  entailment: number
+  contradiction: number
+  neutral: number
   label: string
+}
+
+const normaliseStoredId = (value: string | null): string | null => {
+  if (!value || value === 'null') {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed ? trimmed : null
+}
+
+const loadStoredApiKeys = (): ApiKeyMap => {
+  const raw = safeReadStorage(STORAGE_KEYS.apiKey)
+  if (!raw) {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(raw) as ApiKeyMap
+    if (parsed && typeof parsed === 'object') {
+      return parsed
+    }
+  } catch (error) {
+    console.warn('[Observability] Failed to parse stored API keys', error)
+  }
+  return {}
+}
+
+type GraphNodeData = {
+  label: ReactNode
   kind: string
   step?: number
 }
@@ -48,6 +96,144 @@ const HORIZONTAL_SPACING = 260
 
 const TRACE_SUMMARY_URL =
   (import.meta as any).env?.VITE_TRACE_SUMMARY_URL ?? 'http://localhost:8000/trace-summary'
+
+const STORAGE_KEYS = {
+  selectedTraceId: 'observability:selectedTraceId',
+  selectedObservationId: 'observability:selectedObservationId',
+  pendingTraceId: 'observability:pendingTraceId',
+  provider: 'observability:provider',
+  apiKey: 'observability:apiKey',
+}
+
+type ObservabilityProvider = 'langfuse' | 'langsmith'
+
+const PROVIDER_OPTIONS: { id: ObservabilityProvider; label: string; helper: string }[] = [
+  { id: 'langfuse', label: 'Langfuse', helper: 'Analyze LangGraph traces stored in Langfuse.' },
+  { id: 'langsmith', label: 'LangSmith', helper: 'Connect to LangChain’s LangSmith observability suite.' },
+]
+
+type ApiKeyMap = Partial<Record<ObservabilityProvider, string>>
+
+const SUMMARY_KEY_PREFIX = 'observability:traceSummary:'
+
+const safeReadStorage = (key: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    return window.localStorage.getItem(key)
+  } catch (error) {
+    console.warn('[Observability] Unable to read storage key', key, error)
+    return null
+  }
+}
+
+const safeWriteStorage = (key: string, value: string | null): void => {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    if (value === null) {
+      window.localStorage.removeItem(key)
+    } else {
+      window.localStorage.setItem(key, value)
+    }
+  } catch (error) {
+    console.warn('[Observability] Unable to write storage key', key, error)
+  }
+}
+
+const loadPersistedNarrative = (traceId: string | null): ExecutionNarrative | null => {
+  if (!traceId) {
+    return null
+  }
+  const raw = safeReadStorage(SUMMARY_KEY_PREFIX + traceId)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as ExecutionNarrative
+    const planningTools = Array.isArray(parsed.planningTools)
+      ? parsed.planningTools.map((item) => String(item)).filter((item) => Boolean(item))
+      : []
+    const toolsExecuted = Array.isArray(parsed.toolsExecuted)
+      ? parsed.toolsExecuted
+          .map((entry) => {
+            if (!entry || typeof entry !== 'object') {
+              return null
+            }
+            const candidate = entry as { name?: unknown; summary?: unknown }
+            const name = typeof candidate.name === 'string' ? candidate.name : null
+            if (!name) {
+              return null
+            }
+            const summary =
+              typeof candidate.summary === 'string' && candidate.summary
+                ? candidate.summary
+                : name
+            return { name, summary }
+          })
+          .filter((item): item is { name: string; summary: string } => item !== null)
+      : []
+    return {
+      userQuestion: typeof parsed.userQuestion === 'string' ? parsed.userQuestion : null,
+      planningTools,
+      toolsExecuted,
+      finalAnswer: typeof parsed.finalAnswer === 'string' ? parsed.finalAnswer : null,
+    }
+  } catch (error) {
+    console.warn('[Observability] Failed to parse stored narrative for trace', traceId, error)
+    safeWriteStorage(SUMMARY_KEY_PREFIX + traceId, null)
+    return null
+  }
+}
+
+const persistNarrativeForTrace = (traceId: string, narrative: ExecutionNarrative | null): void => {
+  if (!traceId) {
+    return
+  }
+  if (!narrative) {
+    safeWriteStorage(SUMMARY_KEY_PREFIX + traceId, null)
+    return
+  }
+  try {
+    safeWriteStorage(SUMMARY_KEY_PREFIX + traceId, JSON.stringify(narrative))
+  } catch (error) {
+    console.warn('[Observability] Failed to persist narrative for trace', traceId, error)
+  }
+}
+
+type PendingTraceRequest = {
+  traceId: string
+  timestamp: number
+}
+
+const readPendingTrace = (): PendingTraceRequest | null => {
+  const raw = safeReadStorage(STORAGE_KEYS.pendingTraceId)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as PendingTraceRequest
+    if (parsed && typeof parsed.traceId === 'string') {
+      return parsed
+    }
+  } catch (error) {
+    console.warn('[Observability] Failed to parse pending trace record', error)
+  }
+  safeWriteStorage(STORAGE_KEYS.pendingTraceId, null)
+  return null
+}
+
+const persistPendingTrace = (traceId: string | null): PendingTraceRequest | null => {
+  if (!traceId) {
+    safeWriteStorage(STORAGE_KEYS.pendingTraceId, null)
+    return null
+  }
+  const record: PendingTraceRequest = { traceId, timestamp: Date.now() }
+  safeWriteStorage(STORAGE_KEYS.pendingTraceId, JSON.stringify(record))
+  return record
+}
 
 function formatDateTime(timestamp: string): string {
   try {
@@ -82,6 +268,120 @@ function toNodeLabel(observation: LangfuseObservation, step: number): string {
   }
 
   return parts.join(' ')
+}
+
+const NODE_THEMES: Record<
+  string,
+  { border: string; background: string; accent: string; text: string; badge: string; badgeText: string }
+> = {
+  GENERATION: {
+    border: '#4f46e5',
+    background: '#eef2ff',
+    accent: '#3730a3',
+    text: '#1e1b4b',
+    badge: 'rgba(79,70,229,0.12)',
+    badgeText: '#312e81',
+  },
+  TOOL: {
+    border: '#0f766e',
+    background: '#ecfdf5',
+    accent: '#0f766e',
+    text: '#064e3b',
+    badge: 'rgba(15,118,110,0.12)',
+    badgeText: '#065f46',
+  },
+  AGENT: {
+    border: '#9333ea',
+    background: '#f3e8ff',
+    accent: '#7e22ce',
+    text: '#581c87',
+    badge: 'rgba(147,51,234,0.12)',
+    badgeText: '#6b21a8',
+  },
+  SPAN: {
+    border: '#0891b2',
+    background: '#ecfeff',
+    accent: '#0e7490',
+    text: '#0f172a',
+    badge: 'rgba(8,145,178,0.12)',
+    badgeText: '#0e7490',
+  },
+  CHAIN: {
+    border: '#a16207',
+    background: '#fffbeb',
+    accent: '#854d0e',
+    text: '#713f12',
+    badge: 'rgba(161,98,7,0.12)',
+    badgeText: '#854d0e',
+  },
+  default: {
+    border: '#475569',
+    background: '#f8fafc',
+    accent: '#334155',
+    text: '#0f172a',
+    badge: 'rgba(71,85,105,0.12)',
+    badgeText: '#0f172a',
+  },
+}
+
+type NodeVisualOptions = {
+  kind: string
+  isSelected: boolean
+  hasIssue: boolean
+  borderline: boolean
+}
+
+const ISSUE_THEME = {
+  border: '#dc2626',
+  background: '#fef2f2',
+  accent: '#b91c1c',
+  text: '#7f1d1d',
+  badge: 'rgba(220,38,38,0.12)',
+  badgeText: '#b91c1c',
+}
+
+const BORDERLINE_THEME = {
+  border: '#ea580c',
+  background: '#fff7ed',
+  accent: '#c2410c',
+  text: '#7c2d12',
+  badge: 'rgba(234,88,12,0.12)',
+  badgeText: '#9a3412',
+}
+
+const getNodeVisuals = ({ kind, isSelected, hasIssue, borderline }: NodeVisualOptions) => {
+  let theme = NODE_THEMES[kind as keyof typeof NODE_THEMES] ?? NODE_THEMES.default
+  if (hasIssue) {
+    theme = ISSUE_THEME
+  } else if (borderline) {
+    theme = BORDERLINE_THEME
+  }
+
+  const border = isSelected ? '#1d4ed8' : theme.border
+  const background = isSelected ? '#eef2ff' : theme.background
+  const boxShadow = isSelected
+    ? '0 15px 35px rgba(37,99,235,0.25)'
+    : '0 8px 20px rgba(15,23,42,0.08)'
+
+  return {
+    style: {
+      borderRadius: 18,
+      padding: '18px 22px',
+      border: `2px solid ${border}`,
+      background,
+      boxShadow,
+      minWidth: 260,
+      maxWidth: 420,
+      color: theme.text,
+      lineHeight: 1.4,
+    },
+    badgeStyles: {
+      backgroundColor: theme.badge,
+      color: isSelected ? '#1e1b4b' : theme.badgeText,
+    },
+    accent: theme.accent,
+    text: theme.text,
+  }
 }
 
 function extractFirstUserMessage(observation: LangfuseObservation): string | null {
@@ -303,16 +603,62 @@ function buildHighlight(observation: LangfuseObservation): { label: string; valu
 }
 
 function App() {
+  const initialTraceId = normaliseStoredId(safeReadStorage(STORAGE_KEYS.selectedTraceId))
+  const initialObservationId = normaliseStoredId(safeReadStorage(STORAGE_KEYS.selectedObservationId))
+  const initialProvider = ((): ObservabilityProvider => {
+    const stored = safeReadStorage(STORAGE_KEYS.provider)
+    if (stored === 'langsmith') {
+      return 'langsmith'
+    }
+    return 'langfuse'
+  })()
+  const initialApiKeys = loadStoredApiKeys()
   const [status, setStatus] = useState<ConnectionStatus>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [traces, setTraces] = useState<LangfuseTrace[]>([])
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(initialTraceId)
   const [traceDetail, setTraceDetail] = useState<LangfuseTraceDetail | null>(null)
   const [detailStatus, setDetailStatus] = useState<DetailStatus>('idle')
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [selectedObservationId, setSelectedObservationId] = useState<string | null>(null)
+  const [selectedObservationId, setSelectedObservationId] = useState<string | null>(initialObservationId)
   const [narrativeStatus, setNarrativeStatus] = useState<NarrativeStatus>('idle')
-  const [remoteNarrative, setRemoteNarrative] = useState<ExecutionNarrative | null>(null)
+  const [remoteNarrative, setRemoteNarrative] = useState<ExecutionNarrative | null>(
+    () => loadPersistedNarrative(initialTraceId),
+  )
+  const [pendingTrace, setPendingTraceState] = useState<PendingTraceRequest | null>(() => readPendingTrace())
+  const [provider, setProvider] = useState<ObservabilityProvider>(initialProvider)
+  const [apiKeys, setApiKeys] = useState<ApiKeyMap>(initialApiKeys)
+  const [pendingApiKey, setPendingApiKey] = useState<string>(initialApiKeys[initialProvider] ?? '')
+  const [reasoningSummary, setReasoningSummary] = useState<ReasoningSummary | null>(null)
+  const [observationInsights, setObservationInsights] = useState<ObservationInsight[]>([])
+  const [observationMetrics, setObservationMetrics] = useState<ObservationMetric[]>([])
+  const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
+
+  const updatePendingTrace = useCallback((traceId: string | null) => {
+    const record = persistPendingTrace(traceId)
+    setPendingTraceState(record)
+    return record
+  }, [])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.provider, provider)
+  }, [provider])
+
+  useEffect(() => {
+    if (!Object.keys(apiKeys).length) {
+      safeWriteStorage(STORAGE_KEYS.apiKey, null)
+      return
+    }
+    try {
+      safeWriteStorage(STORAGE_KEYS.apiKey, JSON.stringify(apiKeys))
+    } catch (error) {
+      console.warn('[Observability] Failed to persist API keys', error)
+    }
+  }, [apiKeys])
+
+  useEffect(() => {
+    setPendingApiKey(apiKeys[provider] ?? '')
+  }, [provider])
 
   const statusLabel = useMemo(() => {
     switch (status) {
@@ -394,6 +740,59 @@ function App() {
       void handleSelectTrace(traces[0])
     }
   }, [status, traces, selectedTraceId, handleSelectTrace])
+
+  useEffect(() => {
+    if (!selectedTraceId || traces.length === 0) {
+      return
+    }
+    const next = traces.find((trace) => trace.id === selectedTraceId)
+    if (!next) {
+      return
+    }
+    if (traceDetail && traceDetail.id === next.id) {
+      return
+    }
+    if (detailStatus === 'loading') {
+      return
+    }
+    void handleSelectTrace(next)
+  }, [selectedTraceId, traces, traceDetail, detailStatus, handleSelectTrace])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.selectedTraceId, selectedTraceId)
+  }, [selectedTraceId])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.selectedObservationId, selectedObservationId)
+  }, [selectedObservationId])
+
+  useEffect(() => {
+    const narrative = loadPersistedNarrative(selectedTraceId)
+    setRemoteNarrative(narrative)
+  }, [selectedTraceId])
+
+  const handleProviderSelect = useCallback(
+    (next: ObservabilityProvider) => {
+      setProvider(next)
+    },
+    [],
+  )
+
+  const handleSaveApiKey = useCallback(() => {
+    setApiKeys((current) => {
+      const next = { ...current }
+      const trimmed = pendingApiKey.trim()
+      if (trimmed) {
+        next[provider] = trimmed
+      } else {
+        delete next[provider]
+      }
+      return next
+    })
+  }, [pendingApiKey, provider])
+
+  const activeApiKey = apiKeys[provider] ?? ''
+  const apiKeyStatusLabel = activeApiKey ? 'API key saved locally' : 'Using .env credentials'
 
   useEffect(() => {
     if (detailStatus !== 'loaded' || !traceDetail) {
@@ -598,6 +997,22 @@ function App() {
       reasoning,
     }
   }, [orderedObservations, selectedObservation, selectedReasoning])
+
+  const observationMetricsById = useMemo(() => {
+    const map = new Map<string, ObservationMetric>()
+    const severityValue = (metric: ObservationMetric) => {
+      if (metric.label === 'CONTRADICTED') return 2 + metric.contradiction
+      if (metric.label === 'NEUTRAL') return 1 + metric.contradiction
+      return metric.entailment
+    }
+    observationMetrics.forEach((metric) => {
+      const current = map.get(metric.observationId)
+      if (!current || severityValue(metric) > severityValue(current)) {
+        map.set(metric.observationId, metric)
+      }
+    })
+    return map
+  }, [observationMetrics])
 
   const flowGraph = useMemo(() => {
     if (!traceDetail) {
@@ -947,7 +1362,53 @@ function App() {
 
     orderedObservations.forEach((observation, index) => {
       const depth = computeDepth(observation.id)
+      const metric = observationMetricsById.get(observation.id)
       const isSelected = selectedObservation ? observation.id === selectedObservation.id : index === 0
+      const hasIssue = metric?.label === 'CONTRADICTED'
+      const borderline = metric?.label === 'NEUTRAL'
+      const { style: nodeStyle, badgeStyles } = getNodeVisuals({
+        kind: observation.type,
+        isSelected,
+        hasIssue: Boolean(hasIssue),
+        borderline: Boolean(borderline),
+      })
+      const metadata = observation.metadata ?? {}
+      const nodeTitle =
+        observation.name ||
+        (typeof metadata.langgraph_node === 'string' && metadata.langgraph_node) ||
+        observation.type.toLowerCase()
+
+      const metricPill = metric ? (
+        <span className={`flow-node__metric flow-node__metric--${metric.label.toLowerCase()}`}>
+          {metric.label === 'CONTRADICTED'
+            ? 'Contradiction'
+            : metric.label === 'NEUTRAL'
+            ? 'Needs review'
+            : 'Grounded'}
+        </span>
+      ) : null
+
+      const rootPill = rootCauseObservationId === observation.id ? (
+        <span className="flow-node__metric flow-node__metric--root">Root cause</span>
+      ) : null
+
+      const nodeLabel = (
+        <div className="flow-node">
+          <div className="flow-node__top">
+            <span className="flow-node__badge" style={badgeStyles}>
+              {observation.type.toLowerCase()}
+            </span>
+            <span className="flow-node__step">Step {index + 1}</span>
+          </div>
+          <div className="flow-node__title">{nodeTitle}</div>
+          {metricPill || rootPill ? (
+            <div className="flow-node__meta">
+              {metricPill}
+              {rootPill}
+            </div>
+          ) : null}
+        </div>
+      )
 
       nodes.push({
         id: observation.id,
@@ -956,7 +1417,7 @@ function App() {
           y: ROOT_OFFSET_Y + index * VERTICAL_SPACING,
         },
         data: {
-          label: toNodeLabel(observation, index + 1),
+          label: nodeLabel,
           kind: observation.type,
           step: index + 1,
         },
@@ -964,14 +1425,7 @@ function App() {
         selectable: true,
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
-        style: {
-          borderRadius: 10,
-          padding: 10,
-          border: isSelected ? '2px solid #1d4ed8' : '1px solid #cbd5f5',
-          background: isSelected ? '#eef2ff' : '#ffffff',
-          fontWeight: isSelected ? 600 : 500,
-          color: '#0f172a',
-        },
+        style: nodeStyle,
       })
     })
 
@@ -1053,10 +1507,16 @@ function App() {
   const detailMetadata = selectedObservation?.metadata as Record<string, unknown> | undefined
   const detailInput = selectedObservation?.metadata?.inputs ?? selectedObservation?.input ?? null
   const detailOutput = selectedObservation?.metadata?.output ?? selectedObservation?.output ?? null
-
   const formattedInput = formatPayload(detailInput)
   const formattedOutput = formatPayload(detailOutput)
   const formattedMetadata = formatPayload(detailMetadata ?? {})
+  const selectedMetric = selectedObservation ? observationMetricsById.get(selectedObservation.id) ?? null : null
+  const selectedInsights = useMemo(() => {
+    if (!selectedObservation) {
+      return [] as ObservationInsight[]
+    }
+    return observationInsights.filter((insight) => insight.observationId === selectedObservation.id)
+  }, [selectedObservation, observationInsights])
 
   const loadingTraceId = detailStatus === 'loading' ? selectedTraceId : null
 
@@ -1079,35 +1539,34 @@ function App() {
     })
   }, [])
 
-  const handleProcessTrace = useCallback(() => {
-    if (!traceDetail || orderedObservations.length === 0) {
-      return
-    }
-    setNarrativeStatus('processing')
+  const handleProcessTrace = useCallback(async () => {
+      if (!traceDetail || orderedObservations.length === 0) {
+        return
+      }
+      setNarrativeStatus('processing')
+      updatePendingTrace(traceDetail.id)
 
-    const payload = {
-      trace_id: traceDetail.id,
-      trace_name: traceDetail.name ?? null,
-      observations: orderedObservations,
-    }
+      const payload = {
+        trace_id: traceDetail.id,
+        trace_name: traceDetail.name ?? null,
+        observations: orderedObservations,
+      }
 
-    fetch(TRACE_SUMMARY_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    })
-      .then(async (response) => {
+      try {
+        const response = await fetch(TRACE_SUMMARY_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        })
         if (!response.ok) {
           const text = await response.text().catch(() => '')
           throw new Error(
             `Trace summary request failed: ${response.status} ${response.statusText} ${text}`,
           )
         }
-        return response.json() as Promise<unknown>
-      })
-      .then((data) => {
+        const data = (await response.json()) as Record<string, unknown>
         const value = data as Record<string, unknown>
         const toolsRaw = Array.isArray(value.toolsExecuted) ? value.toolsExecuted : []
         const tools: { name: string; summary: string }[] = toolsRaw
@@ -1155,25 +1614,203 @@ function App() {
         // backend actually returns some content. If the LLM is unavailable or
         // returns an effectively empty object, we keep the existing narrative
         // so the UI still shows a useful story.
-        setRemoteNarrative(isEmptyNarrative ? null : narrative)
+        const nextNarrative = isEmptyNarrative ? null : narrative
+        setRemoteNarrative(nextNarrative)
+        if (traceDetail) {
+          persistNarrativeForTrace(traceDetail.id, nextNarrative)
+        }
+
+        const summaryRaw = value.reasoningSummary
+        if (summaryRaw && typeof summaryRaw === 'object') {
+          const goalValue =
+            typeof (summaryRaw as { goal?: unknown }).goal === 'string'
+              ? ((summaryRaw as { goal?: string }).goal ?? '').trim()
+              : ''
+          const planValue = Array.isArray((summaryRaw as { plan?: unknown[] }).plan)
+            ? ((summaryRaw as { plan?: unknown[] }).plan ?? [])
+                .map((item) => String(item).trim())
+                .filter((item) => item.length > 0)
+            : []
+          const observationsValue = Array.isArray((summaryRaw as { observations?: unknown[] }).observations)
+            ? ((summaryRaw as { observations?: unknown[] }).observations ?? [])
+                .map((item) => String(item).trim())
+                .filter((item) => item.length > 0)
+            : []
+          const resultValue =
+            typeof (summaryRaw as { result?: unknown }).result === 'string'
+              ? ((summaryRaw as { result?: string }).result ?? '').trim()
+              : ''
+          setReasoningSummary({
+            goal: goalValue || null,
+            plan: planValue,
+            observations: observationsValue,
+            result: resultValue || null,
+          })
+        } else {
+          setReasoningSummary(null)
+        }
+
+        const insightsRaw = Array.isArray(value.observationInsights) ? value.observationInsights : []
+        const parsedInsights = insightsRaw
+          .map((entry) => {
+            if (!entry || typeof entry !== 'object') {
+              return null
+            }
+            const record = entry as {
+              observationId?: unknown
+              stage?: unknown
+              summary?: unknown
+              bullets?: unknown
+            }
+            const observationId = typeof record.observationId === 'string' ? record.observationId : null
+            if (!observationId) {
+              return null
+            }
+            const stage = typeof record.stage === 'string' ? record.stage : null
+            const summary = typeof record.summary === 'string' ? record.summary : null
+            const bullets = Array.isArray(record.bullets)
+              ? record.bullets
+                  .map((item) => String(item).trim())
+                  .filter((item) => item.length > 0)
+                  .slice(0, 4)
+              : []
+            return { observationId, stage, summary, bullets }
+          })
+          .filter((item): item is ObservationInsight => item !== null)
+        setObservationInsights(parsedInsights)
+
+        const metricsRaw = Array.isArray(value.observationMetrics) ? value.observationMetrics : []
+        const parsedMetrics = metricsRaw
+          .map((entry) => {
+            if (!entry || typeof entry !== 'object') {
+              return null
+            }
+            const record = entry as ObservationMetric
+            if (typeof record.observationId !== 'string') {
+              return null
+            }
+            return {
+              observationId: record.observationId,
+              metric: typeof record.metric === 'string' ? record.metric : 'groundedness',
+              subject: typeof record.subject === 'string' ? record.subject : 'response',
+              entailment: Number(record.entailment) || 0,
+              contradiction: Number(record.contradiction) || 0,
+              neutral: Number(record.neutral) || 0,
+              label: typeof record.label === 'string' ? record.label : 'NEUTRAL',
+            }
+          })
+          .filter((item): item is ObservationMetric => item !== null)
+        setObservationMetrics(parsedMetrics)
+
+        const rootCause =
+          typeof value.rootCauseObservationId === 'string' && value.rootCauseObservationId
+            ? value.rootCauseObservationId
+            : null
+        setRootCauseObservationId(rootCause)
         setNarrativeStatus('ready')
-      })
-      .catch((error) => {
+      } catch (error) {
         console.error('[Observability] Failed to summarise trace', error)
         setRemoteNarrative(null)
+        if (traceDetail) {
+          persistNarrativeForTrace(traceDetail.id, null)
+        }
+        setReasoningSummary(null)
+        setObservationInsights([])
+        setObservationMetrics([])
+        setRootCauseObservationId(null)
         setNarrativeStatus('ready')
-      })
-  }, [traceDetail, orderedObservations])
+      } finally {
+        updatePendingTrace(null)
+      }
+    },
+    [traceDetail, orderedObservations, updatePendingTrace],
+  )
+
+  useEffect(() => {
+    if (!pendingTrace || !traceDetail || detailStatus !== 'loaded') {
+      return
+    }
+    if (pendingTrace.traceId !== traceDetail.id) {
+      return
+    }
+    if (narrativeStatus === 'processing') {
+      return
+    }
+    void handleProcessTrace()
+  }, [pendingTrace, traceDetail, detailStatus, narrativeStatus, handleProcessTrace])
 
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>Langfuse Observability</h1>
+        <h1>AgentGlass: Observability for LLM Agents</h1>
         <p>
-          Browse Langfuse traces on the left and inspect chronological execution flow on the right.
-          Click nodes for inputs, outputs, and reasoning.
+          Visualise the full flow of tool calls, break down model thoughts into digestible story beats, and score
+          how well each step aligns with the agent’s objectives—all in one workspace.
         </p>
       </header>
+
+      <section className="app-card connection-card">
+        <div className="connection-card__heading">
+          <div>
+            <p className="connection-card__eyebrow">Observability platform</p>
+            <h2>Connect your trace source</h2>
+            <p>
+              Switch between Langfuse or LangSmith and manage API keys without touching env files. Empty fields
+              fall back to your local configuration.
+            </p>
+          </div>
+          <span className={`status-chip ${activeApiKey ? 'status-chip--success' : 'status-chip--muted'}`}>
+            {apiKeyStatusLabel}
+          </span>
+        </div>
+
+        <div className="connection-card__body">
+          <div className="provider-options">
+            {PROVIDER_OPTIONS.map((option) => (
+              <label
+                key={option.id}
+                className={
+                  provider === option.id
+                    ? 'provider-option provider-option--active'
+                    : 'provider-option'
+                }
+              >
+                <input
+                  type="radio"
+                  name="observability-provider"
+                  value={option.id}
+                  checked={provider === option.id}
+                  onChange={() => handleProviderSelect(option.id)}
+                />
+                <span className="provider-option__label">{option.label}</span>
+                <span className="provider-option__helper">{option.helper}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="api-key-field">
+            <label htmlFor="observability-api-key">API key</label>
+            <div className="api-key-input-group">
+              <input
+                id="observability-api-key"
+                type="password"
+                placeholder={`Paste your ${provider === 'langsmith' ? 'LangSmith' : 'Langfuse'} API key`}
+                value={pendingApiKey}
+                onChange={(event) => setPendingApiKey(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button type="button" className="secondary-button" onClick={handleSaveApiKey}>
+                Save key
+              </button>
+            </div>
+            <p className="field-hint">
+              Keys are stored locally in your browser for convenience. Leave blank to continue using your .env
+              configuration.
+            </p>
+          </div>
+        </div>
+      </section>
 
       <section className="app-card">
           <div className="panel-header">
@@ -1307,6 +1944,130 @@ function App() {
                       <h3>{toNodeLabel(selectedObservation, selectedObservationIndex + 1)}</h3>
                       <p>{formatDateTime(selectedObservation.startTime)}</p>
                     </header>
+
+                    {selectedMetric ? (
+                      <div className="observation-metric-card">
+                        <div className="observation-metric-card__header">
+                          <span className="observation-metric-card__eyebrow">Reasoning credibility</span>
+                          <span
+                            className={`metric-label metric-label--${selectedMetric.label.toLowerCase()}`}
+                          >
+                            {selectedMetric.label === 'CONTRADICTED'
+                              ? 'Contradicted'
+                              : selectedMetric.label === 'NEUTRAL'
+                              ? 'Needs review'
+                              : 'Grounded'}
+                          </span>
+                        </div>
+                        <h4>{selectedMetric.subject}</h4>
+                        <p className="observation-metric-card__summary">
+                          {selectedMetric.metric === 'groundedness'
+                            ? 'LLM output checked against trace evidence.'
+                            : selectedMetric.metric}
+                        </p>
+                        <div className="metric-bars">
+                          <div className="metric-bar">
+                            <span>Grounded</span>
+                            <div className="metric-bar__track">
+                              <div
+                                className="metric-bar__fill metric-bar__fill--entailment"
+                                style={{ width: `${Math.min(100, Math.max(0, selectedMetric.entailment * 100))}%` }}
+                              />
+                            </div>
+                            <strong>{Math.round(selectedMetric.entailment * 100)}%</strong>
+                          </div>
+                          <div className="metric-bar">
+                            <span>Needs review</span>
+                            <div className="metric-bar__track">
+                              <div
+                                className="metric-bar__fill metric-bar__fill--neutral"
+                                style={{ width: `${Math.min(100, Math.max(0, selectedMetric.neutral * 100))}%` }}
+                              />
+                            </div>
+                            <strong>{Math.round(selectedMetric.neutral * 100)}%</strong>
+                          </div>
+                          <div className="metric-bar">
+                            <span>Contradiction</span>
+                            <div className="metric-bar__track">
+                              <div
+                                className="metric-bar__fill metric-bar__fill--contradiction"
+                                style={{ width: `${Math.min(100, Math.max(0, selectedMetric.contradiction * 100))}%` }}
+                              />
+                            </div>
+                            <strong>{Math.round(selectedMetric.contradiction * 100)}%</strong>
+                          </div>
+                        </div>
+                        {rootCauseObservationId === selectedObservation.id ? (
+                          <div className="observation-metric-card__root">
+                            Flagged as likely root-cause for failed reasoning.
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {reasoningSummary ? (
+                      <div className="reasoning-summary-card">
+                        <div className="reasoning-summary-card__header">
+                          <span className="reasoning-summary-card__eyebrow">Reasoning timeline</span>
+                          <p>LLM-decomposed view of the agent’s plan, observations, and conclusion.</p>
+                        </div>
+                        {reasoningSummary.goal ? (
+                          <div className="reasoning-summary-card__section">
+                            <span>Goal</span>
+                            <p>{reasoningSummary.goal}</p>
+                          </div>
+                        ) : null}
+                        {reasoningSummary.plan.length > 0 ? (
+                          <div className="reasoning-summary-card__section">
+                            <span>Plan</span>
+                            <ul>
+                              {reasoningSummary.plan.map((step, index) => (
+                                <li key={`${step}-${index}`}>{step}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {reasoningSummary.observations.length > 0 ? (
+                          <div className="reasoning-summary-card__section">
+                            <span>Observations</span>
+                            <ul>
+                              {reasoningSummary.observations.map((item, index) => (
+                                <li key={`${item}-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {reasoningSummary.result ? (
+                          <div className="reasoning-summary-card__section">
+                            <span>Result</span>
+                            <p>{reasoningSummary.result}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {selectedInsights.length > 0 ? (
+                      <div className="observation-insights-card">
+                        <h4>Insight for this step</h4>
+                        <div className="observation-insights-card__list">
+                          {selectedInsights.map((insight) => (
+                            <article key={`${insight.observationId}-${insight.stage}`}>
+                              <header>
+                                {insight.stage ? <span>{insight.stage}</span> : null}
+                                {insight.summary ? <h5>{insight.summary}</h5> : null}
+                              </header>
+                              {insight.bullets.length > 0 ? (
+                                <ul>
+                                  {insight.bullets.map((bullet, index) => (
+                                    <li key={`${insight.observationId}-${index}`}>{bullet}</li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
 
                     {narrativeStatus === 'processing' ? (
                       <div className="execution-narrative">
