@@ -4,7 +4,7 @@ import logging
 import math
 from functools import lru_cache
 from os import getenv
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple, Optional
 
 from sentence_transformers import CrossEncoder
 
@@ -13,11 +13,11 @@ logger = logging.getLogger("uvicorn.error")
 _DEFAULT_MODEL = "cross-encoder/nli-deberta-v3-small"
 
 
-@lru_cache(maxsize=1)
-def _load_model() -> CrossEncoder:
-    model_name = getenv("TRACE_METRICS_MODEL", _DEFAULT_MODEL)
-    logger.info("[TraceMetrics] Loading cross encoder model %s", model_name)
-    return CrossEncoder(model_name, device="cpu")
+@lru_cache(maxsize=4)
+def _load_model_for(model_name: str) -> CrossEncoder:
+    name = model_name or getenv("TRACE_METRICS_MODEL", _DEFAULT_MODEL)
+    logger.info("[TraceMetrics] Loading cross encoder model %s", name)
+    return CrossEncoder(name, device="cpu")
 
 
 def _softmax(logits: Iterable[float]) -> List[float]:
@@ -32,7 +32,7 @@ def _softmax(logits: Iterable[float]) -> List[float]:
     return [val / total for val in exp_values]
 
 
-def score_pairs(pairs: List[Tuple[str, str]]) -> List[Dict[str, float]]:
+def score_pairs(pairs: List[Tuple[str, str]], model_name: Optional[str] = None) -> List[Dict[str, float]]:
     """Return NLI probabilities for each (premise, hypothesis) pair.
 
     The returned dict contains contradiction/neutral/entailment probabilities.
@@ -42,7 +42,7 @@ def score_pairs(pairs: List[Tuple[str, str]]) -> List[Dict[str, float]]:
         return []
 
     try:
-        model = _load_model()
+        model = _load_model_for(model_name or getenv("TRACE_METRICS_MODEL", _DEFAULT_MODEL))
         raw_scores = model.predict(pairs)
     except Exception as exc:  # pragma: no cover - defensive
         logger.info("[TraceMetrics] Failed scoring %d pairs: %r", len(pairs), exc)

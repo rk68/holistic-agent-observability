@@ -61,6 +61,30 @@ type ObservationMetric = {
 }
 
 type GraphMode = 'execution' | 'dataflow'
+type CarbonPhase = {
+  kg: number
+  duration_s: number
+}
+
+type CarbonSummary = {
+  total_kg: number
+  duration_seconds: number
+  breakdown: {
+    reasoning: CarbonPhase
+    rest: CarbonPhase
+  }
+  source?: string
+}
+
+type StoredTraceSummary = {
+  narrative: ExecutionNarrative | null
+  reasoningSummary: ReasoningSummary | null
+  observationInsights: ObservationInsight[]
+  observationMetrics: ObservationMetric[]
+  rootCauseObservationId: string | null
+  carbonSummary?: CarbonSummary | null
+  timestamp: number
+}
 
 const normaliseStoredId = (value: string | null): string | null => {
   if (!value || value === 'null') {
@@ -109,7 +133,21 @@ const STORAGE_KEYS = {
   pendingTraceId: 'observability:pendingTraceId',
   provider: 'observability:provider',
   apiKey: 'observability:apiKey',
+  nliModel: 'observability:nliModel',
+  llmModel: 'observability:llmModel',
 }
+
+const NLI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'cross-encoder/nli-deberta-v3-small', label: 'DeBERTa v3 Small (NLI)' },
+  { id: 'cross-encoder/nli-deberta-v3-base', label: 'DeBERTa v3 Base (NLI)' },
+  { id: 'cross-encoder/nli-roberta-base', label: 'RoBERTa Base (NLI)' },
+]
+
+const LLM_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'qwen3:4b', label: 'Qwen3 4B (Ollama)' },
+  { id: 'gpt-oss:20b', label: 'GPT‑OSS 20B (Ollama)' },
+  { id: 'llama3.1:8b', label: 'Llama 3.1 8B (Ollama)' },
+]
 
 type ObservabilityProvider = 'langfuse' | 'langsmith'
 
@@ -121,6 +159,7 @@ const PROVIDER_OPTIONS: { id: ObservabilityProvider; label: string; helper: stri
 type ApiKeyMap = Partial<Record<ObservabilityProvider, string>>
 
 const SUMMARY_KEY_PREFIX = 'observability:traceSummary:'
+const STORED_TRACE_KEY_PREFIX = 'observability:processedTrace:'
 
 const safeReadStorage = (key: string): string | null => {
   if (typeof window === 'undefined') {
@@ -206,6 +245,49 @@ const persistNarrativeForTrace = (traceId: string, narrative: ExecutionNarrative
     safeWriteStorage(SUMMARY_KEY_PREFIX + traceId, JSON.stringify(narrative))
   } catch (error) {
     console.warn('[Observability] Failed to persist narrative for trace', traceId, error)
+  }
+}
+
+const loadStoredTraceSummary = (traceId: string | null): StoredTraceSummary | null => {
+  if (!traceId) {
+    return null
+  }
+  const raw = safeReadStorage(STORED_TRACE_KEY_PREFIX + traceId)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as StoredTraceSummary
+    if (parsed && typeof parsed === 'object') {
+      return {
+        narrative: parsed.narrative ?? null,
+        reasoningSummary: parsed.reasoningSummary ?? null,
+        observationInsights: Array.isArray(parsed.observationInsights) ? parsed.observationInsights : [],
+        observationMetrics: Array.isArray(parsed.observationMetrics) ? parsed.observationMetrics : [],
+        rootCauseObservationId: typeof parsed.rootCauseObservationId === 'string' ? parsed.rootCauseObservationId : null,
+        carbonSummary: parsed.carbonSummary ?? null,
+        timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : Date.now(),
+      }
+    }
+  } catch (error) {
+    console.warn('[Observability] Failed to parse stored processed trace', traceId, error)
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, null)
+  }
+  return null
+}
+
+const persistStoredTraceSummary = (traceId: string, summary: StoredTraceSummary | null): void => {
+  if (!traceId) {
+    return
+  }
+  if (!summary) {
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, null)
+    return
+  }
+  try {
+    safeWriteStorage(STORED_TRACE_KEY_PREFIX + traceId, JSON.stringify(summary))
+  } catch (error) {
+    console.warn('[Observability] Failed to persist processed trace', traceId, error)
   }
 }
 
@@ -330,6 +412,15 @@ const NODE_THEMES: Record<
   },
 }
 
+const NODE_ICONS: Record<string, string> = {
+  GENERATION: '🤖',
+  TOOL: '🛠️',
+  AGENT: '🧠',
+  SPAN: '🧩',
+  CHAIN: '⛓️',
+  default: '📦',
+}
+
 type NodeVisualOptions = {
   kind: string
   isSelected: boolean
@@ -373,7 +464,7 @@ const getNodeVisuals = ({ kind, isSelected, hasIssue, borderline }: NodeVisualOp
     style: {
       borderRadius: 18,
       padding: '18px 22px',
-      border: `2px solid ${border}`,
+      border: `3px solid ${border}`,
       background,
       boxShadow,
       minWidth: 260,
@@ -641,6 +732,106 @@ function App() {
   const [rootCauseObservationId, setRootCauseObservationId] = useState<string | null>(null)
   const [graphMode, setGraphMode] = useState<GraphMode>('execution')
   const [failureSummary, setFailureSummary] = useState<FailureSummary | null>(null)
+  const [storedSummary, setStoredSummary] = useState<StoredTraceSummary | null>(null)
+  const [carbonSummary, setCarbonSummary] = useState<CarbonSummary | null>(null)
+  const initialNliModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.nliModel)) ||
+    NLI_MODEL_OPTIONS[0]?.id || 'cross-encoder/nli-deberta-v3-small'
+  const initialLlmModel = normaliseStoredId(safeReadStorage(STORAGE_KEYS.llmModel)) ||
+    LLM_MODEL_OPTIONS[0]?.id || 'qwen3:4b'
+  const [nliModel, setNliModel] = useState<string>(initialNliModel)
+  const [llmModel, setLlmModel] = useState<string>(initialLlmModel)
+
+  const metricOverview = useMemo(() => {
+    const totals = { grounded: 0, neutral: 0, contradicted: 0 }
+    for (const m of observationMetrics) {
+      if (m.label === 'ENTAILED') totals.grounded += 1
+      else if (m.label === 'NEUTRAL') totals.neutral += 1
+      else if (m.label === 'CONTRADICTED') totals.contradicted += 1
+    }
+    return totals
+  }, [observationMetrics])
+
+  const metricDistribution = useMemo(() => {
+    const total = observationMetrics.length || 1
+    return [
+      {
+        key: 'grounded',
+        label: 'Grounded',
+        count: metricOverview.grounded,
+        percent: Math.round((metricOverview.grounded / total) * 100),
+      },
+      {
+        key: 'neutral',
+        label: 'Needs review',
+        count: metricOverview.neutral,
+        percent: Math.round((metricOverview.neutral / total) * 100),
+      },
+      {
+        key: 'contradiction',
+        label: 'Contradiction',
+        count: metricOverview.contradicted,
+        percent: Math.round((metricOverview.contradicted / total) * 100),
+      },
+    ]
+  }, [metricOverview, observationMetrics.length])
+
+  const rawMetricSamples = useMemo(() => {
+    const items = observationMetrics.slice(0, 6).map((m) => ({
+      key: `${m.observationId}:${m.subject}:${m.metric}`,
+      title: `${m.subject} • ${m.metric.replaceAll('_', ' ')}`,
+      entailment: Math.max(0, Math.min(1, Number(m.entailment) || 0)),
+      neutral: Math.max(0, Math.min(1, Number(m.neutral) || 0)),
+      contradiction: Math.max(0, Math.min(1, Number(m.contradiction) || 0)),
+    }))
+    return items
+  }, [observationMetrics])
+
+  const storedSummaryTimestamp = useMemo(() => {
+    if (!storedSummary) {
+      return null
+    }
+    try {
+      return formatDateTime(new Date(storedSummary.timestamp).toISOString())
+    } catch {
+      return null
+    }
+  }, [storedSummary])
+
+  const applyStoredSummary = useCallback(
+    (summary: StoredTraceSummary) => {
+      setRemoteNarrative(summary.narrative)
+      setReasoningSummary(summary.reasoningSummary)
+      setObservationInsights(summary.observationInsights)
+      setObservationMetrics(summary.observationMetrics)
+      setRootCauseObservationId(summary.rootCauseObservationId)
+      setCarbonSummary(summary.carbonSummary ?? null)
+      setNarrativeStatus('ready')
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!selectedTraceId) {
+      setStoredSummary(null)
+      return
+    }
+    const stored = loadStoredTraceSummary(selectedTraceId)
+    setStoredSummary(stored)
+    if (stored) {
+      applyStoredSummary(stored)
+    }
+  }, [selectedTraceId, applyStoredSummary])
+
+  const handleLoadStoredSummary = useCallback(() => {
+    if (!selectedTraceId) {
+      return
+    }
+    const stored = loadStoredTraceSummary(selectedTraceId)
+    if (stored) {
+      setStoredSummary(stored)
+      applyStoredSummary(stored)
+    }
+  }, [selectedTraceId, applyStoredSummary])
 
   const updatePendingTrace = useCallback((traceId: string | null) => {
     const record = persistPendingTrace(traceId)
@@ -651,6 +842,14 @@ function App() {
   useEffect(() => {
     safeWriteStorage(STORAGE_KEYS.provider, provider)
   }, [provider])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.nliModel, nliModel)
+  }, [nliModel])
+
+  useEffect(() => {
+    safeWriteStorage(STORAGE_KEYS.llmModel, llmModel)
+  }, [llmModel])
 
   useEffect(() => {
     if (!Object.keys(apiKeys).length) {
@@ -1056,6 +1255,8 @@ function App() {
           fontWeight: 600,
           background: '#1d4ed8',
           color: '#ffffff',
+          border: '3px solid #1e3a8a',
+          boxShadow: '0 8px 20px rgba(15,23,42,0.12)',
         },
       },
     ]
@@ -1411,6 +1612,7 @@ function App() {
         <span className="flow-node__metric flow-node__metric--root">Root cause</span>
       ) : null
 
+      const icon = NODE_ICONS[observation.type as keyof typeof NODE_ICONS] ?? NODE_ICONS.default
       const nodeLabel = (
         <div className="flow-node">
           <div className="flow-node__top">
@@ -1419,7 +1621,10 @@ function App() {
             </span>
             <span className="flow-node__step">Step {index + 1}</span>
           </div>
-          <div className="flow-node__title">{nodeTitle}</div>
+          <div className="flow-node__title-row">
+            <div className="flow-node__icon">{icon}</div>
+            <div className="flow-node__title">{nodeTitle}</div>
+          </div>
           {metricPill || rootPill ? (
             <div className="flow-node__meta">
               {metricPill}
@@ -1518,7 +1723,7 @@ function App() {
 
     console.info('[Observability] Graph built', { nodes: nodes.length, edges: edges.length })
     return { nodes, edges }
-  }, [traceDetail, orderedObservations, selectedObservation])
+  }, [traceDetail, orderedObservations, selectedObservation, observationMetricsById, rootCauseObservationId])
 
   const graphSubtitle = useMemo(() => {
     if (!selectedTrace) {
@@ -1595,7 +1800,7 @@ function App() {
   }, [])
 
   const handleProcessTrace = useCallback(async () => {
-      if (!traceDetail || orderedObservations.length === 0) {
+      if (!traceDetail || orderedObservations.length === 0 || narrativeStatus === 'processing') {
         return
       }
       setNarrativeStatus('processing')
@@ -1605,6 +1810,8 @@ function App() {
         trace_id: traceDetail.id,
         trace_name: traceDetail.name ?? null,
         observations: orderedObservations,
+        nli_model: nliModel,
+        llm_model: llmModel,
       }
 
       try {
@@ -1676,6 +1883,7 @@ function App() {
         }
 
         const summaryRaw = value.reasoningSummary
+        let nextReasoningSummary: ReasoningSummary | null = null
         if (summaryRaw && typeof summaryRaw === 'object') {
           const goalValue =
             typeof (summaryRaw as { goal?: unknown }).goal === 'string'
@@ -1695,15 +1903,14 @@ function App() {
             typeof (summaryRaw as { result?: unknown }).result === 'string'
               ? ((summaryRaw as { result?: string }).result ?? '').trim()
               : ''
-          setReasoningSummary({
+          nextReasoningSummary = {
             goal: goalValue || null,
             plan: planValue,
             observations: observationsValue,
             result: resultValue || null,
-          })
-        } else {
-          setReasoningSummary(null)
+          }
         }
+        setReasoningSummary(nextReasoningSummary)
 
         const insightsRaw = Array.isArray(value.observationInsights) ? value.observationInsights : []
         const parsedInsights = insightsRaw
@@ -1762,7 +1969,28 @@ function App() {
             ? value.rootCauseObservationId
             : null
         setRootCauseObservationId(rootCause)
+
+        const carbonRaw = value.carbonSummary
+        const nextCarbonSummary: CarbonSummary | null =
+          carbonRaw && typeof carbonRaw === 'object'
+            ? (carbonRaw as CarbonSummary)
+            : null
+        setCarbonSummary(nextCarbonSummary)
         setNarrativeStatus('ready')
+
+        if (traceDetail) {
+          const storedPayload: StoredTraceSummary = {
+            narrative: nextNarrative,
+            reasoningSummary: nextReasoningSummary,
+            observationInsights: parsedInsights,
+            observationMetrics: parsedMetrics,
+            rootCauseObservationId: rootCause,
+            carbonSummary: nextCarbonSummary,
+            timestamp: Date.now(),
+          }
+          persistStoredTraceSummary(traceDetail.id, storedPayload)
+          setStoredSummary(storedPayload)
+        }
       } catch (error) {
         console.error('[Observability] Failed to summarise trace', error)
         setRemoteNarrative(null)
@@ -1773,12 +2001,13 @@ function App() {
         setObservationInsights([])
         setObservationMetrics([])
         setRootCauseObservationId(null)
+        setCarbonSummary(null)
         setNarrativeStatus('ready')
       } finally {
         updatePendingTrace(null)
       }
     },
-    [traceDetail, orderedObservations, updatePendingTrace],
+    [traceDetail, orderedObservations, narrativeStatus, updatePendingTrace, nliModel, llmModel],
   )
 
   useEffect(() => {
@@ -1788,7 +2017,7 @@ function App() {
     if (pendingTrace.traceId !== traceDetail.id) {
       return
     }
-    if (narrativeStatus === 'processing') {
+    if (narrativeStatus !== 'idle') {
       return
     }
     void handleProcessTrace()
@@ -1895,8 +2124,12 @@ function App() {
             <TraceTable
               traces={traces}
               onSelect={handleSelectTrace}
+              onProcess={handleProcessTrace}
               selectedTraceId={selectedTraceId}
               loadingTraceId={loadingTraceId}
+              processingTraceId={
+                narrativeStatus === 'processing' ? (pendingTrace?.traceId ?? traceDetail?.id ?? null) : null
+              }
             />
           </div>
         ) : (
@@ -1910,58 +2143,112 @@ function App() {
         )}
       </section>
 
+      <section className="app-card settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Model settings</h2>
+            <p>Select models for groundedness scoring and narrative generation. These do not affect the agent.</p>
+          </div>
+        </div>
+        <div className="settings-grid">
+          <div className="settings-field">
+            <label htmlFor="nli-model">NLI model</label>
+            <select
+              id="nli-model"
+              value={nliModel}
+              onChange={(e) => setNliModel(e.target.value)}
+            >
+              {NLI_MODEL_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="settings-field">
+            <label htmlFor="llm-model">Narrative LLM</label>
+            <select
+              id="llm-model"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+            >
+              {LLM_MODEL_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
+
       <section className="app-card graph-card">
         <div className="graph-header">
-          <div>
+          <div className="graph-header__title">
             <h2>{selectedTrace ? selectedTrace.name || 'Trace flow' : 'Trace flow'}</h2>
             <p>{graphSubtitle}</p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            {selectedTrace ? (
-              <>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={handleProcessTrace}
-                  disabled={
-                    detailStatus !== 'loaded' ||
-                    orderedObservations.length === 0 ||
-                    narrativeStatus === 'processing'
-                  }
-                >
-                  {narrativeStatus === 'idle'
-                    ? 'Process trace'
-                    : narrativeStatus === 'processing'
-                    ? 'Processing…'
-                    : 'Reprocess trace'}
-                </button>
-                <a
-                  className="secondary-button"
-                  href={selectedTrace.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open in Langfuse
-                </a>
-              </>
-            ) : null}
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setGraphMode('execution')}
-              disabled={graphMode === 'execution'}
-            >
-              Execution flow
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setGraphMode('dataflow')}
-              disabled={graphMode === 'dataflow'}
-            >
-              Data-flow view
-            </button>
-          </div>
+          {(storedSummaryTimestamp || selectedTrace) ? (
+            <div className="graph-header__meta">
+              {storedSummaryTimestamp ? (
+                <div className="stored-summary-chip">Cached {storedSummaryTimestamp}</div>
+              ) : null}
+              {selectedTrace ? (
+                <div className="graph-header-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleProcessTrace}
+                    disabled={
+                      detailStatus !== 'loaded' ||
+                      orderedObservations.length === 0 ||
+                      narrativeStatus === 'processing'
+                    }
+                  >
+                    {narrativeStatus === 'idle'
+                      ? 'Process trace'
+                      : narrativeStatus === 'processing'
+                      ? 'Processing…'
+                      : 'Reprocess trace'}
+                  </button>
+                  {storedSummary ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={handleLoadStoredSummary}
+                      disabled={narrativeStatus === 'processing'}
+                    >
+                      Load cached summary
+                    </button>
+                  ) : null}
+                  <a
+                    className="secondary-button"
+                    href={selectedTrace.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open in Langfuse
+                  </a>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setGraphMode('execution')}
+            disabled={graphMode === 'execution'}
+          >
+            Execution flow
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setGraphMode('dataflow')}
+            disabled={graphMode === 'dataflow'}
+          >
+            Data-flow view
+          </button>
         </div>
 
         {detailStatus === 'loading' ? (
@@ -2154,48 +2441,61 @@ function App() {
 
                     {narrativeStatus === 'ready' && effectiveNarrative ? (
                       <div className="execution-narrative">
-                        <h4>Execution narrative</h4>
-                        <ol>
-                          {effectiveNarrative.userQuestion ? (
-                            <li>
-                              <span className="execution-narrative__label">User asked</span>
-                              <p>{truncate(effectiveNarrative.userQuestion, 200)}</p>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.planningTools.length > 0 ? (
-                            <li>
-                              <span className="execution-narrative__label">Planned tool calls</span>
-                              <ul className="execution-narrative__tools-list">
-                                {effectiveNarrative.planningTools.map((tool) => (
-                                  <li key={tool} className="execution-narrative__tool-chip">
-                                    {tool}
-                                  </li>
-                                ))}
-                              </ul>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.toolsExecuted.length > 0 ? (
-                            <li>
-                              <span className="execution-narrative__label">Tools executed</span>
-                              <ul className="execution-narrative__tools-list execution-narrative__tools-list--stacked">
-                                {effectiveNarrative.toolsExecuted.map((item) => (
-                                  <li key={item.name}>
-                                    <div className="execution-narrative__tool-chip">{item.name}</div>
-                                    <p className="execution-narrative__tool-summary">
-                                      {truncate(item.summary, 200)}
-                                    </p>
-                                  </li>
-                                ))}
-                              </ul>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.finalAnswer ? (
-                            <li>
-                              <span className="execution-narrative__label">Model concluded</span>
-                              <p>{truncate(effectiveNarrative.finalAnswer, 260)}</p>
-                            </li>
-                          ) : null}
-                        </ol>
+                        <div className="timeline">
+                          <div className="timeline__header">
+                            <h4>Execution narrative</h4>
+                            <p className="timeline__subhead">From user query to final answer</p>
+                          </div>
+                          <ol>
+                            {effectiveNarrative.userQuestion ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">User asked</span>
+                                  <p>{truncate(effectiveNarrative.userQuestion, 200)}</p>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.planningTools.length > 0 ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot timeline__dot--accent" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Planned tool calls</span>
+                                  <ul className="execution-narrative__tools-list">
+                                    {effectiveNarrative.planningTools.map((tool) => (
+                                      <li key={tool} className="execution-narrative__tool-chip">{tool}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.toolsExecuted.length > 0 ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Tools executed</span>
+                                  <ul className="execution-narrative__tools-list execution-narrative__tools-list--stacked">
+                                    {effectiveNarrative.toolsExecuted.map((item) => (
+                                      <li key={item.name}>
+                                        <div className="execution-narrative__tool-chip">✅ {item.name}</div>
+                                        <p className="execution-narrative__tool-summary">{truncate(item.summary, 200)}</p>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.finalAnswer ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot timeline__dot--accent" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Model concluded</span>
+                                  <p>{truncate(effectiveNarrative.finalAnswer, 260)}</p>
+                                </div>
+                              </li>
+                            ) : null}
+                          </ol>
+                        </div>
                       </div>
                     ) : null}
 
@@ -2232,11 +2532,14 @@ function App() {
                                 <div className="observation-plan__row">
                                   <span className="observation-plan__tool">{toolName}</span>
                                   <span className="observation-plan__status">
-                                    {isExecuted ? 'Executed' : 'Planned only'}
+                                    {isExecuted ? '✅ Executed' : '⌛ Planned only'}
                                   </span>
                                 </div>
                                 {snippet ? (
-                                  <p className="observation-plan__snippet">{truncate(snippet, 180)}</p>
+                                  <div className="observation-plan__snippet-box">
+                                    <span>Reasoning snippet</span>
+                                    <p>{truncate(snippet, 180)}</p>
+                                  </div>
                                 ) : null}
                               </li>
                             )
@@ -2415,13 +2718,6 @@ function App() {
         ) : null}
       </section>
 
-      <footer className="app-footer">
-        <small>
-          Credentials are read from <code>VITE_LANGFUSE_*</code> environment variables. Avoid
-          shipping production secrets to the browser—use this toolkit for local analysis or proxy the
-          requests through a backend.
-        </small>
-      </footer>
     </div>
   )
 }

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Sequence
+import time
 
 from langchain_core.messages import AIMessage
 from langfuse import Langfuse, get_client
+from codecarbon import EmissionsTracker
 
 try:  # Prefer modern Langfuse layout
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler  # type: ignore[attr-defined]
@@ -58,6 +61,30 @@ def _extract_final_answer(result: Any) -> str | None:
             return content if isinstance(content, str) else str(content)
 
     return None
+
+
+@dataclass
+class CarbonMetrics:
+    total_kg: float
+    duration_seconds: float
+
+
+@contextmanager
+def carbon_tracker(settings: AgentSettings):
+    tracker = EmissionsTracker(
+        project_name=settings.agent_name,
+        log_level="error",
+        output_dir=".carbon",
+        tracking_mode="process",
+    )
+    tracker.start()
+    start = time.perf_counter()
+    try:
+        yield tracker
+    finally:
+        total = tracker.stop() or 0.0
+        elapsed = time.perf_counter() - start
+        tracker.final_metrics = CarbonMetrics(total_kg=total, duration_seconds=elapsed)
 
 
 def _configure_tracer(settings: AgentSettings) -> Langfuse:

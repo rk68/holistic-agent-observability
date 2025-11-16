@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Iterable, Sequence
+import json
+import time
+import hashlib
+from pathlib import Path
 
 import os
 import requests
@@ -20,6 +24,11 @@ from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
 
 from .config import AgentSettings, load_settings
+
+try:
+    from codecarbon import OfflineEmissionsTracker  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    OfflineEmissionsTracker = None  # type: ignore
 from .tools import DEFAULT_TOOLS
 from .tracing import traced_graph
 
@@ -222,7 +231,54 @@ def build_agent(*, settings: AgentSettings | None = None) -> Runnable:
 def ask(question: str, *, settings: AgentSettings | None = None) -> str:
     settings = settings or load_settings()
     graph = build_agent(settings=settings)
+
+    # Prepare CodeCarbon offline tracker to avoid sudo prompts on macOS.
+    tracker = None
+    start_ts = time.time()
+    try:
+        if OfflineEmissionsTracker is not None:
+            tracker = OfflineEmissionsTracker(
+                save_to_file=False,
+                tracking_mode="process",
+                log_level="error",
+                allow_multiple_runs=True,
+                force_mode_cpu_load=True,
+                force_cpu_power=8,
+                force_ram_power=2,
+            )
+            tracker.start()
+    except Exception:
+        tracker = None
+
     state = graph.invoke({"messages": _to_messages(question, settings=settings)})
+
+    emissions_kg: float | None = None
+    try:
+        if tracker is not None:
+            emissions_kg = float(tracker.stop() or 0.0)
+    except Exception:
+        emissions_kg = None
+
+    # Persist a sidecar carbon record keyed by the question hash for downstream join.
+    try:
+        question_norm = (question or "").strip()
+        qhash = hashlib.sha1(question_norm.encode("utf-8")).hexdigest() if question_norm else None
+        record = {
+            "question": question_norm,
+            "question_hash": qhash,
+            "agent_name": settings.agent_name,
+            "model": settings.model,
+            "timestamp": int(start_ts),
+            "duration_seconds": max(0.0, time.time() - start_ts),
+            "emissions_kg": emissions_kg,
+        }
+        out_dir = Path("data") / "carbon"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"carbon_{qhash or 'unknown'}_{int(start_ts)}.json"
+        (out_dir / fname).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
     return _extract_final_text(state.get("messages", []))
 
 
