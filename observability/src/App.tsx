@@ -2235,22 +2235,11 @@ function App() {
                     <div className="graph-metric-card graph-metric-card--carbon">
                       <div className="graph-metric-card__header">
                         <span className="graph-metric-card__label">Sustainability impact</span>
-                        <span className="graph-metric-card__stat">{carbonSummary.source || 'CodeCarbon'}</span>
+                        <span className="graph-metric-card__stat">
+                          {Math.round((carbonSummary.total_kg || 0) * 1_000_000).toLocaleString()} mg CO₂e
+                        </span>
                       </div>
                       <ul className="metric-distribution">
-                        <li className="metric-distribution__item">
-                          <div className="metric-distribution__label">
-                            <span className="metric-dot metric-dot--grounded" aria-hidden />
-                            <div>
-                              <strong>Total</strong>
-                              <span>{Math.round((carbonSummary.total_kg || 0) * 1_000_000).toLocaleString()} mg CO₂e</span>
-                            </div>
-                          </div>
-                          <div className="metric-distribution__bar" aria-hidden>
-                            <div className="metric-distribution__fill metric-distribution__fill--grounded" style={{ width: '100%' }} />
-                          </div>
-                          <span className="metric-distribution__percent">100%</span>
-                        </li>
                         <li className="metric-distribution__item">
                           <div className="metric-distribution__label">
                             <span className="metric-dot metric-dot--grounded" aria-hidden />
@@ -2304,6 +2293,7 @@ function App() {
                           </span>
                         </li>
                       </ul>
+                      <div className="graph-metric-card__foot">source: {carbonSummary.source || 'CodeCarbon'}</div>
                     </div>
                   ) : null}
                   <div className="graph-metric-card graph-metric-card--raw">
@@ -2535,48 +2525,61 @@ function App() {
 
                     {narrativeStatus === 'ready' && effectiveNarrative ? (
                       <div className="execution-narrative">
-                        <h4>Execution narrative</h4>
-                        <ol>
-                          {effectiveNarrative.userQuestion ? (
-                            <li>
-                              <span className="execution-narrative__label">User asked</span>
-                              <p>{truncate(effectiveNarrative.userQuestion, 200)}</p>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.planningTools.length > 0 ? (
-                            <li>
-                              <span className="execution-narrative__label">Planned tool calls</span>
-                              <ul className="execution-narrative__tools-list">
-                                {effectiveNarrative.planningTools.map((tool) => (
-                                  <li key={tool} className="execution-narrative__tool-chip">
-                                    {tool}
-                                  </li>
-                                ))}
-                              </ul>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.toolsExecuted.length > 0 ? (
-                            <li>
-                              <span className="execution-narrative__label">Tools executed</span>
-                              <ul className="execution-narrative__tools-list execution-narrative__tools-list--stacked">
-                                {effectiveNarrative.toolsExecuted.map((item) => (
-                                  <li key={item.name}>
-                                    <div className="execution-narrative__tool-chip">{item.name}</div>
-                                    <p className="execution-narrative__tool-summary">
-                                      {truncate(item.summary, 200)}
-                                    </p>
-                                  </li>
-                                ))}
-                              </ul>
-                            </li>
-                          ) : null}
-                          {effectiveNarrative.finalAnswer ? (
-                            <li>
-                              <span className="execution-narrative__label">Model concluded</span>
-                              <p>{truncate(effectiveNarrative.finalAnswer, 260)}</p>
-                            </li>
-                          ) : null}
-                        </ol>
+                        <div className="timeline">
+                          <div className="timeline__header">
+                            <h4>Execution narrative</h4>
+                            <p className="timeline__subhead">From user query to final answer</p>
+                          </div>
+                          <ol>
+                            {effectiveNarrative.userQuestion ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">User asked</span>
+                                  <p>{truncate(effectiveNarrative.userQuestion, 200)}</p>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.planningTools.length > 0 ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot timeline__dot--accent" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Planned tool calls</span>
+                                  <ul className="execution-narrative__tools-list">
+                                    {effectiveNarrative.planningTools.map((tool) => (
+                                      <li key={tool} className="execution-narrative__tool-chip">{tool}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.toolsExecuted.length > 0 ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Tools executed</span>
+                                  <ul className="execution-narrative__tools-list execution-narrative__tools-list--stacked">
+                                    {effectiveNarrative.toolsExecuted.map((item) => (
+                                      <li key={item.name}>
+                                        <div className="execution-narrative__tool-chip">✅ {item.name}</div>
+                                        <p className="execution-narrative__tool-summary">{truncate(item.summary, 200)}</p>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </li>
+                            ) : null}
+                            {effectiveNarrative.finalAnswer ? (
+                              <li className="timeline__item">
+                                <span className="timeline__dot timeline__dot--accent" />
+                                <div className="timeline__card">
+                                  <span className="timeline__label">Model concluded</span>
+                                  <p>{truncate(effectiveNarrative.finalAnswer, 260)}</p>
+                                </div>
+                              </li>
+                            ) : null}
+                          </ol>
+                        </div>
                       </div>
                     ) : null}
 
@@ -2613,11 +2616,14 @@ function App() {
                                 <div className="observation-plan__row">
                                   <span className="observation-plan__tool">{toolName}</span>
                                   <span className="observation-plan__status">
-                                    {isExecuted ? 'Executed' : 'Planned only'}
+                                    {isExecuted ? '✅ Executed' : '⌛ Planned only'}
                                   </span>
                                 </div>
                                 {snippet ? (
-                                  <p className="observation-plan__snippet">{truncate(snippet, 180)}</p>
+                                  <div className="observation-plan__snippet-box">
+                                    <span>Reasoning snippet</span>
+                                    <p>{truncate(snippet, 180)}</p>
+                                  </div>
                                 ) : null}
                               </li>
                             )

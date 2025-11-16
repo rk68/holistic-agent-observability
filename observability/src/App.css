@@ -418,6 +418,22 @@
   align-items: center;
 }
 
+/* Stack label and helper text to avoid merged inline text like "Grounded1 steps" */
+.metric-distribution__label > div {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.metric-distribution__label > div > strong {
+  display: block;
+  color: #0f172a;
+}
+.metric-distribution__label > div > span {
+  display: block;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
 .metric-dot {
   width: 0.65rem;
   height: 0.65rem;
@@ -469,6 +485,13 @@
   color: #0f172a;
   min-width: 2.5rem;
   text-align: right;
+}
+
+/* Carbon card footer (source label) */
+.graph-metric-card__foot {
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: #94a3b8;
 }
 
 .graph-metric-card--raw {
